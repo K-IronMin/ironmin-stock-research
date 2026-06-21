@@ -265,12 +265,16 @@ hr { opacity: 0.12 !important; margin: 12px 0 !important; }
   /* 패딩 축소 */
   .main .block-container { padding: 0.8rem 0.7rem 3rem !important; max-width: 100% !important; }
 
-  /* 컬럼 2열 배치 (지수/카드 등) */
-  [data-testid="column"] {
-    width: 48% !important;
-    flex: 1 1 48% !important;
-    min-width: 48% !important;
-    max-width: 50% !important;
+  /* st.columns() 가로 스크롤 (시장심리·FRED 등 복잡한 카드) */
+  [data-testid="stHorizontalBlock"] {
+    overflow-x: auto !important;
+    flex-wrap: nowrap !important;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 6px;
+  }
+  [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+    min-width: 180px !important;
+    flex: 0 0 auto !important;
   }
 
   /* 메트릭 카드 조정 */
@@ -286,6 +290,7 @@ hr { opacity: 0.12 !important; margin: 12px 0 !important; }
   /* 카드 패딩 */
   .card { padding: 14px 15px !important; }
   .theme-card { padding: 13px 14px !important; }
+  .idx-card { padding: 9px 10px !important; }
 
   /* 차트 스크롤 허용 */
   [data-testid="stPlotlyChart"] { overflow-x: auto !important; }
@@ -864,20 +869,25 @@ if "시장 동향" in menu:
     IDX2  = {"니케이 225":"^N225","상해종합":"000001.SS","항셍":"^HSI","대만가권":"^TWII","인도 SENSEX":"^BSESN","유로스톡스50":"^STOXX50E","브라질 IBOV":"^BVSP","아르헨티나 MER":"^MERV"}
     FLAGS2= {"니케이 225":"🇯🇵","상해종합":"🇨🇳","항셍":"🇭🇰","대만가권":"🇹🇼","인도 SENSEX":"🇮🇳","유로스톡스50":"🇪🇺","브라질 IBOV":"🇧🇷","아르헨티나 MER":"🇦🇷"}
     _all_idx = list(IDX.values()) + list(IDX2.values())
+    _GRID = "display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px;margin-bottom:8px"
     with st.spinner(""):
         idx = get_index_data(_all_idx)
-    for col,(label,tk) in zip(st.columns(7), IDX.items()):
+
+    # 미국·한국 주요 지수
+    _cards_html = ""
+    for label, tk in IDX.items():
         d   = idx.get(tk)
         url = f"https://finance.yahoo.com/quote/{tk.replace('^','%5E')}"
-        with col:
-            if d: st.markdown(mk_card(FLAGS[label], label, f"{d['price']:,.2f}", d["chg"], url=url), unsafe_allow_html=True)
-            else: st.markdown(mk_card(FLAGS[label], label, "—", url=url), unsafe_allow_html=True)
-    for col,(label,tk) in zip(st.columns(8), IDX2.items()):
+        _cards_html += mk_card(FLAGS[label], label, f"{d['price']:,.2f}" if d else "—", d["chg"] if d else None, url=url)
+    st.markdown(f'<div style="{_GRID}">{_cards_html}</div>', unsafe_allow_html=True)
+
+    # 국가 지수
+    _cards_html = ""
+    for label, tk in IDX2.items():
         d   = idx.get(tk)
         url = f"https://finance.yahoo.com/quote/{tk.replace('^','%5E')}"
-        with col:
-            if d: st.markdown(mk_card(FLAGS2[label], label, f"{d['price']:,.2f}", d["chg"], url=url), unsafe_allow_html=True)
-            else: st.markdown(mk_card(FLAGS2[label], label, "—", url=url), unsafe_allow_html=True)
+        _cards_html += mk_card(FLAGS2[label], label, f"{d['price']:,.2f}" if d else "—", d["chg"] if d else None, url=url)
+    st.markdown(f'<div style="{_GRID}">{_cards_html}</div>', unsafe_allow_html=True)
 
     # ── 환율 · 원자재 · 암호화폐 ──
     st.markdown(sec_hdr("💱", "환율 · 원자재 · 암호화폐"), unsafe_allow_html=True)
@@ -887,17 +897,16 @@ if "시장 동향" in menu:
     COMM_PFX  = {"USD/KRW":"","WTI 원유":"$","브렌트유":"$","금($/oz)":"$","은":"$","구리":"$","천연가스":"$","비트코인":"$"}
     with st.spinner(""):
         comm_data = get_index_data(list(COMM.values()))
-    for col,(label,tk) in zip(st.columns(8), COMM.items()):
+    _cards_html = ""
+    for label, tk in COMM.items():
         d   = comm_data.get(tk)
         url = f"https://finance.yahoo.com/quote/{tk.replace('^','%5E')}"
-        with col:
-            if d:
-                dec   = COMM_DEC[label]
-                pfx   = COMM_PFX[label]
-                p_fmt = f"{pfx}{d['price']:,.{dec}f}"
-                st.markdown(mk_card(COMM_ICON[label], label, p_fmt, d["chg"], url=url), unsafe_allow_html=True)
-            else:
-                st.markdown(mk_card(COMM_ICON[label], label, "—", url=url), unsafe_allow_html=True)
+        if d:
+            p_fmt = f"{COMM_PFX[label]}{d['price']:,.{COMM_DEC[label]}f}"
+            _cards_html += mk_card(COMM_ICON[label], label, p_fmt, d["chg"], url=url)
+        else:
+            _cards_html += mk_card(COMM_ICON[label], label, "—", url=url)
+    st.markdown(f'<div style="{_GRID}">{_cards_html}</div>', unsafe_allow_html=True)
 
     # ── 시장 심리 ──
     st.markdown(sec_hdr("🧠", "시장 심리"), unsafe_allow_html=True)
