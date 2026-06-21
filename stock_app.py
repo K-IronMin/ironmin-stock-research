@@ -55,7 +55,7 @@ h1, h2, h3, h4, h5, h6, button, input, select, textarea,
 html { font-size: 14px; }
 
 /* ══ 레이아웃 ══ */
-.main .block-container { padding: 1.6rem 2.2rem 4rem; max-width: 1220px; }
+.main .block-container { padding: 1.6rem 1.1rem 4rem; max-width: 1400px; }
 section[data-testid="stSidebar"] > div { padding-top: 0 !important; }
 
 /* ══ 사이드바 메뉴 ══ */
@@ -579,6 +579,40 @@ def get_yearly_returns(tickers: tuple) -> dict:
         pass
     return result
 
+@st.cache_data(ttl=3600*4)
+def get_rsi_data(tickers: tuple) -> dict:
+    """섹터 전체 티커 RSI(14) 배치 계산"""
+    result = {}
+    try:
+        tks = list(tickers)
+        raw = yf.download(tks, period="3mo", auto_adjust=True, progress=False)
+        closes = raw["Close"] if "Close" in raw.columns else raw
+        if isinstance(closes, pd.Series):
+            closes = closes.to_frame(tks[0])
+        for tk in tks:
+            if tk in closes.columns:
+                col = closes[tk].dropna()
+                if len(col) >= 15:
+                    delta    = col.diff()
+                    gain     = delta.clip(lower=0).rolling(14).mean()
+                    loss     = (-delta.clip(upper=0)).rolling(14).mean()
+                    avg_g    = gain.iloc[-1]
+                    avg_l    = loss.iloc[-1]
+                    if avg_l == 0:
+                        result[tk] = 100.0
+                    else:
+                        result[tk] = 100 - (100 / (1 + avg_g / avg_l))
+    except:
+        pass
+    return result
+
+def rsi_signal(rsi):
+    """RSI 값을 신호등 이모지로 변환"""
+    if rsi is None: return "⚪"
+    if rsi < 40:    return "🟢"
+    if rsi > 65:    return "🔴"
+    return "🟡"
+
 def get_price(tk):
     try: return yf.Ticker(tk).fast_info.last_price
     except: return None
@@ -645,6 +679,20 @@ def get_dart_list(days=14, page_count=15):
         if data.get("status") != "000": return []
         return data.get("list", [])
     except: return []
+
+@st.cache_data(ttl=1800)
+def get_surge_news(ticker: str) -> str:
+    """거래량 급등 종목 최신 뉴스 헤드라인 1건 반환"""
+    try:
+        items = yf.Ticker(ticker).news
+        if not items:
+            return ""
+        first = items[0]
+        # yfinance 버전에 따라 구조가 다름
+        title = (first.get("content", {}) or {}).get("title") or first.get("title", "")
+        return title[:60] if title else ""
+    except:
+        return ""
 
 @st.cache_data(ttl=600)
 def get_volume_surge(tickers, lookback=21):
@@ -740,7 +788,12 @@ def sec_hdr(icon, title):
   <div class="sec-hdr-line"></div>
 </div>"""
 
-def mk_card(icon, label, val_str, chg=None, sub=None):
+def mk_card(icon, label, val_str, chg=None, sub=None, url=None):
+    if url:
+        _ls = "color:inherit;text-decoration:none;border-bottom:1px dotted rgba(128,128,128,0.22);cursor:pointer"
+        label_html = f'<a href="{url}" target="_blank" rel="noopener" style="{_ls}">{label}</a>'
+    else:
+        label_html = label
     if chg is not None:
         c = "#ef4444" if chg>=0 else "#3b82f6"
         a = "▲" if chg>=0 else "▼"
@@ -750,7 +803,7 @@ def mk_card(icon, label, val_str, chg=None, sub=None):
     sub_html = f'<div style="font-size:0.62em;opacity:0.38;margin-top:1px">{sub}</div>' if sub else ""
     return f"""
 <div class="idx-card">
-  <div style="font-size:0.62em;opacity:0.42;margin-bottom:2px;font-weight:600;letter-spacing:0.3px">{icon} {label}</div>
+  <div style="font-size:0.62em;opacity:0.42;margin-bottom:2px;font-weight:600;letter-spacing:0.3px">{icon} {label_html}</div>
   <div style="font-size:1.0em;font-weight:700;letter-spacing:-0.3px">{val_str}</div>
   {chg_html}{sub_html}
 </div>"""
@@ -814,34 +867,37 @@ if "시장 동향" in menu:
     with st.spinner(""):
         idx = get_index_data(_all_idx)
     for col,(label,tk) in zip(st.columns(7), IDX.items()):
-        d = idx.get(tk)
+        d   = idx.get(tk)
+        url = f"https://finance.yahoo.com/quote/{tk.replace('^','%5E')}"
         with col:
-            if d: st.markdown(mk_card(FLAGS[label], label, f"{d['price']:,.2f}", d["chg"]), unsafe_allow_html=True)
-            else: st.markdown(mk_card(FLAGS[label], label, "—"), unsafe_allow_html=True)
+            if d: st.markdown(mk_card(FLAGS[label], label, f"{d['price']:,.2f}", d["chg"], url=url), unsafe_allow_html=True)
+            else: st.markdown(mk_card(FLAGS[label], label, "—", url=url), unsafe_allow_html=True)
     for col,(label,tk) in zip(st.columns(8), IDX2.items()):
-        d = idx.get(tk)
+        d   = idx.get(tk)
+        url = f"https://finance.yahoo.com/quote/{tk.replace('^','%5E')}"
         with col:
-            if d: st.markdown(mk_card(FLAGS2[label], label, f"{d['price']:,.2f}", d["chg"]), unsafe_allow_html=True)
-            else: st.markdown(mk_card(FLAGS2[label], label, "—"), unsafe_allow_html=True)
+            if d: st.markdown(mk_card(FLAGS2[label], label, f"{d['price']:,.2f}", d["chg"], url=url), unsafe_allow_html=True)
+            else: st.markdown(mk_card(FLAGS2[label], label, "—", url=url), unsafe_allow_html=True)
 
     # ── 환율 · 원자재 · 암호화폐 ──
     st.markdown(sec_hdr("💱", "환율 · 원자재 · 암호화폐"), unsafe_allow_html=True)
-    COMM      = {"USD/KRW":"KRW=X","금($/oz)":"GC=F","WTI 원유":"CL=F","브렌트유":"BZ=F","구리":"HG=F","은":"SI=F","천연가스":"NG=F","비트코인":"BTC-USD"}
-    COMM_DEC  = {"USD/KRW":0,"금($/oz)":0,"WTI 원유":2,"브렌트유":2,"구리":3,"은":2,"천연가스":3,"비트코인":0}
-    COMM_ICON = {"USD/KRW":"💱","금($/oz)":"🥇","WTI 원유":"🛢","브렌트유":"🛢","구리":"🔶","은":"🪙","천연가스":"🔥","비트코인":"₿"}
-    COMM_PFX  = {"USD/KRW":"","금($/oz)":"$","WTI 원유":"$","브렌트유":"$","구리":"$","은":"$","천연가스":"$","비트코인":"$"}
+    COMM      = {"USD/KRW":"KRW=X","WTI 원유":"CL=F","브렌트유":"BZ=F","금($/oz)":"GC=F","은":"SI=F","구리":"HG=F","천연가스":"NG=F","비트코인":"BTC-USD"}
+    COMM_DEC  = {"USD/KRW":0,"WTI 원유":2,"브렌트유":2,"금($/oz)":0,"은":2,"구리":3,"천연가스":3,"비트코인":0}
+    COMM_ICON = {"USD/KRW":"💱","WTI 원유":"🛢","브렌트유":"🛢","금($/oz)":"🥇","은":"🪙","구리":"🔶","천연가스":"🔥","비트코인":"₿"}
+    COMM_PFX  = {"USD/KRW":"","WTI 원유":"$","브렌트유":"$","금($/oz)":"$","은":"$","구리":"$","천연가스":"$","비트코인":"$"}
     with st.spinner(""):
         comm_data = get_index_data(list(COMM.values()))
     for col,(label,tk) in zip(st.columns(8), COMM.items()):
-        d = comm_data.get(tk)
+        d   = comm_data.get(tk)
+        url = f"https://finance.yahoo.com/quote/{tk.replace('^','%5E')}"
         with col:
             if d:
                 dec   = COMM_DEC[label]
                 pfx   = COMM_PFX[label]
                 p_fmt = f"{pfx}{d['price']:,.{dec}f}"
-                st.markdown(mk_card(COMM_ICON[label], label, p_fmt, d["chg"]), unsafe_allow_html=True)
+                st.markdown(mk_card(COMM_ICON[label], label, p_fmt, d["chg"], url=url), unsafe_allow_html=True)
             else:
-                st.markdown(mk_card(COMM_ICON[label], label, "—"), unsafe_allow_html=True)
+                st.markdown(mk_card(COMM_ICON[label], label, "—", url=url), unsafe_allow_html=True)
 
     # ── 시장 심리 ──
     st.markdown(sec_hdr("🧠", "시장 심리"), unsafe_allow_html=True)
@@ -1181,6 +1237,7 @@ if "시장 동향" in menu:
     with st.spinner(""):
         _sector_data = get_index_data(list(_all_sector_tks))
         _yearly_data = get_yearly_returns(_all_sector_tks)
+        _rsi_data    = get_rsi_data(_all_sector_tks)
 
     # ── 빅테크 체온계 ──
     st.markdown(sec_hdr("🌡️", "빅테크 체온계"), unsafe_allow_html=True)
@@ -1195,10 +1252,11 @@ if "시장 동향" in menu:
                 _a = "▲" if _d["chg"] >= 0 else "▼"
                 st.markdown(f"""
 <div class="idx-card" style="padding:8px 5px;text-align:center">
-  <div style="font-size:0.6em;opacity:0.45;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+  <div style="font-size:0.6em;opacity:0.45;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
     <a href="{_url}" target="_blank" style="color:inherit;text-decoration:none">{_nm}</a>
   </div>
-  <div style="font-size:0.9em;font-weight:800;color:{_c}">{_a}{abs(_d['chg']):.2f}%</div>
+  <div style="font-size:0.82em;font-weight:700;letter-spacing:-0.3px;margin-bottom:1px">${_d['price']:,.2f}</div>
+  <div style="font-size:0.8em;font-weight:800;color:{_c}">{_a}{abs(_d['chg']):.2f}%</div>
 </div>""", unsafe_allow_html=True)
             else:
                 st.markdown(f'<div class="idx-card" style="padding:8px 5px;text-align:center"><div style="font-size:0.6em;opacity:0.4">{_nm}</div><div style="font-size:0.9em;opacity:0.25">—</div></div>', unsafe_allow_html=True)
@@ -1230,14 +1288,24 @@ if "시장 동향" in menu:
             dc    = "#ef4444" if chg >= 0 else "#3b82f6"
             yr    = _yearly_data.get(tk)
             yr_html = f'<span style="color:{"#ef4444" if yr >= 0 else "#3b82f6"}">{yr:+.0f}%</span>' if yr is not None else '<span style="opacity:0.25">—</span>'
+            price = _sector_data.get(tk, {}).get("price")
+            if price is not None:
+                if is_kr:
+                    p_html = f'<span style="opacity:0.7">{price:,.0f}</span>'
+                else:
+                    p_html = f'<span style="opacity:0.7">${price:,.2f}</span>'
+            else:
+                p_html = '<span style="opacity:0.25">—</span>'
+            sig = rsi_signal(_rsi_data.get(tk))
             rows_html += f"""
 <div style="display:flex;align-items:center;padding:2px 5px;border-radius:3px">
   <div style="flex:1;font-size:0.75em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">
-    <span style="opacity:0.38;font-size:0.82em">{flag}</span>
+    <span style="font-size:0.78em">{sig}</span>
     <a href="{url}" target="_blank" style="color:inherit;text-decoration:none;margin-left:2px">{nm}</a>
   </div>
-  <div style="font-size:0.75em;font-weight:700;color:{dc};min-width:50px;text-align:right">{chg:+.2f}%</div>
-  <div style="font-size:0.7em;min-width:46px;text-align:right;opacity:0.65">{yr_html}</div>
+  <div style="font-size:0.7em;min-width:52px;text-align:right;opacity:0.7">{p_html}</div>
+  <div style="font-size:0.75em;font-weight:700;color:{dc};min-width:46px;text-align:right">{chg:+.2f}%</div>
+  <div style="font-size:0.7em;min-width:40px;text-align:right;opacity:0.65">{yr_html}</div>
 </div>"""
 
         sector_name = cat['name'].replace('\n', ' ')
@@ -1250,21 +1318,25 @@ if "시장 동향" in menu:
   </div>
   <div style="display:flex;font-size:0.58em;opacity:0.3;font-weight:600;letter-spacing:0.4px;
               padding:0 5px 3px;border-bottom:1px solid rgba(128,128,128,0.08);margin-bottom:1px">
-    <div style="flex:1">종목</div>
-    <div style="min-width:50px;text-align:right">당일</div>
-    <div style="min-width:46px;text-align:right">1년</div>
+    <div style="flex:1">RSI · 종목</div>
+    <div style="min-width:52px;text-align:right">현재가</div>
+    <div style="min-width:46px;text-align:right">당일</div>
+    <div style="min-width:40px;text-align:right">1년</div>
   </div>
   {rows_html}
 </div>""", unsafe_allow_html=True)
 
-    # 2열 배치
-    for i in range(0, len(SECTOR_BASKETS), 2):
-        c1, c2 = st.columns(2)
+    # 3열 배치
+    for i in range(0, len(SECTOR_BASKETS), 3):
+        c1, c2, c3 = st.columns(3)
         with c1:
             render_sector_card(SECTOR_BASKETS[i])
         with c2:
             if i + 1 < len(SECTOR_BASKETS):
                 render_sector_card(SECTOR_BASKETS[i + 1])
+        with c3:
+            if i + 2 < len(SECTOR_BASKETS):
+                render_sector_card(SECTOR_BASKETS[i + 2])
 
     st.markdown("<hr class='dot-divider'>", unsafe_allow_html=True)
 
@@ -1380,10 +1452,16 @@ if "시장 동향" in menu:
             st.caption("현재 거래량 급등 종목이 없습니다. (기준: 20일 평균 대비 1.5배 이상)")
         else:
             # 헤더 행
-            hdr_cols = st.columns([5, 2, 2, 3, 2])
-            _hdr_labels = ["종목명 / 티커", "현재가", "등락률", "거래량 배율", "오늘 거래량"]
+            hdr_cols = st.columns([3, 2, 2, 3, 2, 6])
+            _hdr_labels = ["종목명 / 티커", "현재가", "등락률", "거래량 배율", "오늘 거래량", "급등 사유 (최신 뉴스)"]
             for _hc, _hl in zip(hdr_cols, _hdr_labels):
                 _hc.markdown(f'<div style="font-size:0.65em;opacity:0.38;font-weight:700;letter-spacing:1px;padding-bottom:4px;border-bottom:1px solid rgba(128,128,128,0.12)">{_hl}</div>', unsafe_allow_html=True)
+
+            def _fmt_vol(v):
+                if v >= 1e8:   return f"{v/1e8:.1f}억"
+                if v >= 1e6:   return f"{v/1e6:.1f}M"
+                if v >= 1000:  return f"{v/1000:.0f}K"
+                return str(v)
 
             for _r in _surge_filtered:
                 _tk   = _r["ticker"]
@@ -1395,23 +1473,16 @@ if "시장 동향" in menu:
                 _vav  = _r["vol_avg"]
                 _cc   = "#ef4444" if _chg >= 0 else "#3b82f6"
                 _ca   = "▲" if _chg >= 0 else "▼"
-                # 배율별 색상 (3배 이상: 빨강, 2배: 주황, 1.5배: 노랑)
                 _rc   = "#f87171" if _rat >= 3 else "#fb923c" if _rat >= 2 else "#fcd34d"
-                # 거래량 바 (최대 5배 기준 정규화)
                 _bar_w = min(_rat / 5 * 100, 100)
                 _pfx = "$" if not (".KS" in _tk or ".KQ" in _tk) else "₩"
                 _pfmt = f"{_pfx}{_px:,.2f}" if _px >= 1 else f"{_pfx}{_px:.4f}"
+                _news = get_surge_news(_tk)
 
-                def _fmt_vol(v):
-                    if v >= 1e8:   return f"{v/1e8:.1f}억"
-                    if v >= 1e6:   return f"{v/1e6:.1f}M"
-                    if v >= 1000:  return f"{v/1000:.0f}K"
-                    return str(v)
-
-                r_cols = st.columns([5, 2, 2, 3, 2])
+                r_cols = st.columns([3, 2, 2, 3, 2, 6])
                 with r_cols[0]:
                     _lnk = stock_link_url(_tk)
-                    st.markdown(f'<div style="padding:7px 0"><div style="font-size:0.85em;font-weight:700"><a href="{_lnk}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px dotted rgba(128,128,128,0.25)">{_nm[:24]}</a></div><div style="font-size:0.7em;opacity:0.4;letter-spacing:0.4px;margin-top:1px">{_tk}</div></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="padding:7px 0"><div style="font-size:0.85em;font-weight:700"><a href="{_lnk}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px dotted rgba(128,128,128,0.25)">{_nm[:20]}</a></div><div style="font-size:0.7em;opacity:0.4;letter-spacing:0.4px;margin-top:1px">{_tk}</div></div>', unsafe_allow_html=True)
                 with r_cols[1]:
                     st.markdown(f'<div style="font-size:0.83em;font-weight:600;padding:7px 0">{_pfmt}</div>', unsafe_allow_html=True)
                 with r_cols[2]:
@@ -1429,6 +1500,9 @@ if "시장 동향" in menu:
 </div>""", unsafe_allow_html=True)
                 with r_cols[4]:
                     st.markdown(f'<div style="font-size:0.8em;opacity:0.65;padding:7px 0">{_fmt_vol(_vtd)}</div>', unsafe_allow_html=True)
+                with r_cols[5]:
+                    _news_html = f'<span style="opacity:0.7">{_news}</span>' if _news else '<span style="opacity:0.22">—</span>'
+                    st.markdown(f'<div style="font-size:0.76em;padding:7px 0;line-height:1.4">{_news_html}</div>', unsafe_allow_html=True)
 
     st.markdown("<hr class='dot-divider'>", unsafe_allow_html=True)
 
