@@ -427,6 +427,21 @@ def stock_display_name(ticker: str, short: bool = False) -> str:
         return kor_name
     return f"{kor_name} ({eng_name})"
 
+def stock_link_url(ticker: str) -> str:
+    """종목 URL: 한국주식 → 네이버 금융, 미국주식 → Yahoo Finance"""
+    tk = ticker.upper()
+    if ".KS" in tk or ".KQ" in tk:
+        code = tk.replace(".KS","").replace(".KQ","")
+        return f"https://finance.naver.com/item/main.naver?code={code}"
+    return f"https://finance.yahoo.com/quote/{tk}"
+
+def stock_linked_name(ticker: str, short: bool = False, style: str = "") -> str:
+    """클릭 가능한 종목명 HTML — 네이버금융(KR) / Yahoo Finance(US) 링크"""
+    url  = stock_link_url(ticker)
+    name = stock_display_name(ticker, short=short)
+    base = "color:inherit;text-decoration:none;border-bottom:1px dotted rgba(128,128,128,0.25);cursor:pointer"
+    return f'<a href="{url}" target="_blank" rel="noopener" style="{base};{style}">{name}</a>'
+
 def stock_label(ticker: str) -> str:
     """카드/표 헤더용: 이름 + 티커 배지"""
     is_kr = ".KS" in ticker or ".KQ" in ticker
@@ -961,7 +976,7 @@ if "시장 동향" in menu:
             "KR": {}
         },
         {
-            "icon": "🦾", "name": "로봇\n자동화",
+            "icon": "🦾", "name": "휴머노이드\n로봇",
             "US": {"ROBO":"로봇·자동화", "IRBO":"로봇(iShares)", "ARKQ":"자율주행·AI"},
             "KR": {"394670.KS":"TIGER 로보틱스"}
         },
@@ -1197,7 +1212,8 @@ if "시장 동향" in menu:
 
                 r_cols = st.columns([5, 2, 2, 3, 2])
                 with r_cols[0]:
-                    st.markdown(f'<div style="padding:7px 0"><div style="font-size:0.85em;font-weight:700">{_nm[:24]}</div><div style="font-size:0.7em;opacity:0.4;letter-spacing:0.4px;margin-top:1px">{_tk}</div></div>', unsafe_allow_html=True)
+                    _lnk = stock_link_url(_tk)
+                    st.markdown(f'<div style="padding:7px 0"><div style="font-size:0.85em;font-weight:700"><a href="{_lnk}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px dotted rgba(128,128,128,0.25)">{_nm[:24]}</a></div><div style="font-size:0.7em;opacity:0.4;letter-spacing:0.4px;margin-top:1px">{_tk}</div></div>', unsafe_allow_html=True)
                 with r_cols[1]:
                     st.markdown(f'<div style="font-size:0.83em;font-weight:600;padding:7px 0">{_pfmt}</div>', unsafe_allow_html=True)
                 with r_cols[2]:
@@ -1235,7 +1251,7 @@ if "시장 동향" in menu:
                 events  = t.get("key_events",[])
                 tickers = t.get("tickers",[])
                 tk_html = "".join(
-                    f'<span class="tag t-blue" title="{x}">{stock_display_name(x, short=True) if x in STOCK_NAMES else x}</span>'
+                    f'<a href="{stock_link_url(x)}" target="_blank" rel="noopener" style="text-decoration:none"><span class="tag t-blue" title="{x}">{stock_display_name(x, short=True) if x in STOCK_NAMES else x}</span></a>'
                     for x in tickers
                 )
                 ev_html = "".join(f'<span class="tag t-purple">· {e}</span>' for e in events)
@@ -1307,7 +1323,7 @@ elif "발굴 종목" in menu:
 <div class="card">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
     <div>
-      <span style="font-size:1.2em;font-weight:800;letter-spacing:-0.3px">{flag} {stock_display_name(tk) if tk in STOCK_NAMES else name}</span>
+      <span style="font-size:1.2em;font-weight:800;letter-spacing:-0.3px">{flag} {stock_linked_name(tk) if tk in STOCK_NAMES else f'<a href="{stock_link_url(tk)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px dotted rgba(128,128,128,0.25)">{name}</a>'}</span>
       <span style="opacity:0.35;margin-left:8px;font-size:0.72em;letter-spacing:0.3px">{tk}</span>
       &nbsp;{badge(status)}
     </div>
@@ -1565,7 +1581,7 @@ elif "분석" in menu:
 <div class="card">
   <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
     <div>
-      <div style="font-size:1.35em;font-weight:800;letter-spacing:-0.5px">{flag} {nm}</div>
+      <div style="font-size:1.35em;font-weight:800;letter-spacing:-0.5px">{flag} <a href="{stock_link_url(tk)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px dotted rgba(128,128,128,0.25)">{nm}</a></div>
       <div style="opacity:0.42;font-size:0.75em;margin-top:3px;letter-spacing:0.3px">{tk}</div>
       <div style="opacity:0.38;font-size:0.72em;margin-top:2px">{sector} &nbsp;·&nbsp; {industry}</div>
       <div style="margin-top:10px">{star_html} &nbsp;<span class="badge {gcls}">{grade}</span> &nbsp;<span style="opacity:0.4;font-size:0.78em">IronMin 스코어 {sc}/10</span></div>
@@ -1856,7 +1872,7 @@ elif "포트폴리오" in menu:
             border:1px solid rgba(128,128,128,0.1);border-radius:8px">
   <div style="display:flex;align-items:center;gap:12px;min-width:0">
     <div style="min-width:0">
-      <div style="font-size:0.85em;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px">{stock_display_name(r['ticker']) if r['ticker'] in STOCK_NAMES else r['name']}</div>
+      <div style="font-size:0.85em;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px"><a href="{stock_link_url(r['ticker'])}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px dotted rgba(128,128,128,0.25)">{stock_display_name(r['ticker']) if r['ticker'] in STOCK_NAMES else r['name']}</a></div>
       <div style="font-size:0.68em;opacity:0.38;letter-spacing:0.3px;margin-top:1px">{r['ticker']} &nbsp;·&nbsp; {r['qty']}주 · 매수 {buy_str}</div>
     </div>
   </div>
