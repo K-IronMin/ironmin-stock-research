@@ -1,0 +1,11 @@
+# !! API 키 보안 — 절대 업로드 금지
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+
+# 분석 보고서 (선택적으로 제외)
+*.md
