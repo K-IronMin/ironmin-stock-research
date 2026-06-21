@@ -365,6 +365,66 @@ STOCK_NAMES = {
     "EXAI": ("엑사이바이오", "Exai Bio"),
     "SPY": ("S&P500 ETF", "SPDR S&P 500 ETF"),
     "QQQ": ("나스닥100 ETF", "Invesco QQQ"),
+    # ── 반도체 ──
+    "QCOM": ("퀄컴", "Qualcomm"),
+    "ASML": ("ASML", "ASML Holding"),
+    "AMAT": ("어플라이드머티리얼즈", "Applied Materials"),
+    "LRCX": ("램리서치", "Lam Research"),
+    "KLAC": ("KLA", "KLA Corporation"),
+    "TER":  ("테라다인", "Teradyne"),
+    "ONTO": ("온토이노베이션", "Onto Innovation"),
+    # ── 클라우드 ──
+    "SNOW": ("스노우플레이크", "Snowflake"),
+    "NET":  ("클라우드플레어", "Cloudflare"),
+    "DDOG": ("데이터독", "Datadog"),
+    "MDB":  ("몽고DB", "MongoDB"),
+    "CFLT": ("컨플루언트", "Confluent"),
+    "GTLB": ("깃랩", "GitLab"),
+    # ── AI 소프트웨어 ──
+    "ORCL": ("오라클", "Oracle"),
+    "CRM":  ("세일즈포스", "Salesforce"),
+    "PLTR": ("팔란티어", "Palantir"),
+    "AI":   ("씨쓰리에이아이", "C3.ai"),
+    "PATH": ("유아이패스", "UiPath"),
+    # ── AI 광학 ──
+    "GLW":  ("코닝", "Corning"),
+    "CIEN": ("시에나", "Ciena"),
+    "GFS":  ("글로벌파운드리스", "GlobalFoundries"),
+    # ── 전력 인프라 ──
+    "NEE":  ("넥스트에라에너지", "NextEra Energy"),
+    # ── 휴머노이드 로봇 ──
+    "ABB":  ("ABB", "ABB Ltd"),
+    "ROK":  ("로크웰오토메이션", "Rockwell Automation"),
+    "HON":  ("허니웰", "Honeywell"),
+    # ── 방산 ──
+    "RTX":  ("RTX", "RTX Corporation"),
+    "LMT":  ("록히드마틴", "Lockheed Martin"),
+    "NOC":  ("노스롭그루먼", "Northrop Grumman"),
+    "BA":   ("보잉", "Boeing"),
+    "GD":   ("제너럴다이나믹스", "General Dynamics"),
+    # ── 바이오 ──
+    "LLY":  ("일라이릴리", "Eli Lilly"),
+    "ABBV": ("애브비", "AbbVie"),
+    # ── 양자컴퓨팅 ──
+    "IBM":  ("IBM", "IBM"),
+    "IONQ": ("아이온큐", "IonQ"),
+    "RGTI": ("리게티컴퓨팅", "Rigetti Computing"),
+    "QUBT": ("퀀텀컴퓨팅", "Quantum Computing Inc"),
+    "QMCO": ("퀀텀코퍼레이션", "Quantum Corporation"),
+    "ARQQ": ("아르킷퀀텀", "Arqit Quantum"),
+    "SMR":  ("뉴스케일파워", "NuScale Power"),
+    # ── 데이터센터 ──
+    "EQIX": ("에퀴닉스", "Equinix"),
+    "AMT":  ("아메리칸타워", "American Tower"),
+    "DLR":  ("디지털리얼티", "Digital Realty"),
+    "VRT":  ("버티브", "Vertiv"),
+    "DELL": ("델테크놀로지스", "Dell Technologies"),
+    "SMCI": ("슈퍼마이크로", "Super Micro Computer"),
+    "HPE":  ("HP엔터프라이즈", "HP Enterprise"),
+    "NTAP": ("넷앱", "NetApp"),
+    # ── 2차전지 ──
+    "ALB":  ("알베마를", "Albemarle"),
+    "MP":   ("MP머티리얼즈", "MP Materials"),
     # ── 추가 한국 주식 ──
     "039440.KS": ("오이솔루션", None),
     "094280.KQ": ("옵티시스", None),
@@ -374,8 +434,18 @@ STOCK_NAMES = {
     "052690.KS": ("한전기술", None),
     "454910.KS": ("두산로보틱스", None),
     "277810.KQ": ("레인보우로보틱스", None),
+    "108490.KQ": ("로보티즈", None),
     "207940.KS": ("삼성바이오로직스", None),
     "068270.KS": ("셀트리온", None),
+    "009540.KS": ("HD현대중공업", None),
+    "010140.KS": ("삼성중공업", None),
+    "042660.KS": ("한화오션", None),
+    "010620.KS": ("현대미포조선", None),
+    "096770.KS": ("SK이노베이션", None),
+    "247540.KS": ("에코프로비엠", None),
+    "003670.KS": ("포스코퓨처엠", None),
+    "042700.KS": ("한미반도체", None),
+    "039030.KS": ("이오테크닉스", None),
 }
 
 # 이름 → 티커 역방향 매핑 (소문자 키)
@@ -792,6 +862,35 @@ if "시장 동향" in menu:
             return round(pv / cv, 2), exp
         except: return None, None
 
+    @st.cache_data(ttl=3600*6)
+    def get_aaii_sentiment():
+        """AAII 투자자 심리 설문 — 주간 발표 (강세%·약세%·스프레드)"""
+        try:
+            import csv, io
+            req = _ur.Request(
+                "https://www.aaii.com/sentimentsurvey/sent_results.csv",
+                headers={"User-Agent":"Mozilla/5.0"}
+            )
+            with _ur.urlopen(req, timeout=7) as r:
+                text = r.read().decode("utf-8", errors="ignore")
+            rows = list(csv.DictReader(io.StringIO(text)))
+            # 유효한 마지막 행 (Bullish 값 있는 것)
+            rows = [row for row in rows if row.get("Bullish","").strip()]
+            if not rows:
+                return None, None, None, None
+            last = rows[-1]
+            def _p(s):
+                s = s.strip().replace("%","")
+                v = float(s)
+                return v * 100 if v <= 1.0 else v   # 소수형(0.34) → %로 변환
+            bull = _p(last["Bullish"])
+            bear = _p(last["Bearish"])
+            spread = bull - bear
+            date = last.get("Date","").strip()
+            return bull, bear, spread, date
+        except:
+            return None, None, None, None
+
     def fng_gauge_card(icon, title, val, chg, label):
         """공탐지수 카드 — 게이지 바 포함"""
         if val is None:
@@ -820,8 +919,10 @@ if "시장 동향" in menu:
     cnn_val, cnn_chg, cnn_lbl = get_cnn_fng()
     btc_val, btc_chg, btc_lbl = get_btc_fng()
     pc_ratio, pc_exp           = get_put_call()
+    aaii_bull, aaii_bear, aaii_spread, aaii_date = get_aaii_sentiment()
     with st.spinner(""):
-        vix_data = get_index_data(["^VIX"])
+        vix_data    = get_index_data(["^VIX"])
+        skew_dxy    = get_index_data(["^SKEW", "DX-Y.NYB"])
 
     si1, si2, si3, si4 = st.columns(4)
 
@@ -871,6 +972,75 @@ if "시장 동향" in menu:
             st.markdown(mk_card("📊","풋/콜 비율","—"), unsafe_allow_html=True)
     with si4:
         st.markdown(fng_gauge_card("₿", "공탐지수 (BTC)", btc_val, btc_chg, btc_lbl), unsafe_allow_html=True)
+
+    # ── 시장 심리 2행: SKEW · DXY · AAII ──
+    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+    si5, si6, si7 = st.columns(3)
+
+    with si5:
+        sd = skew_dxy.get("^SKEW")
+        if sd:
+            sv = sd["price"]
+            sc = "#f87171" if sv >= 140 else "#fbbf24" if sv >= 120 else "#34d399"
+            sl = "꼬리리스크 경보" if sv >= 140 else "경계" if sv >= 120 else "안정"
+            skew_pct = min(max((sv - 100) / 60 * 100, 0), 100)
+            st.markdown(f"""
+<div class="idx-card" style="text-align:left;padding:16px 18px">
+  <div style="font-size:0.65em;opacity:0.45;font-weight:600;letter-spacing:0.3px;margin-bottom:8px">📐 CBOE SKEW 지수</div>
+  <div style="display:flex;align-items:baseline;gap:8px">
+    <span style="font-size:1.55em;font-weight:800;color:{sc};letter-spacing:-1px">{sv:.1f}</span>
+    <span style="font-size:0.72em;color:{sc};font-weight:700">{sl}</span>
+  </div>
+  <div class="fng-bar-wrap">
+    <div class="fng-bar" style="width:{skew_pct:.1f}%;background:linear-gradient(90deg,#22c55e,{sc})"></div>
+  </div>
+  <div style="font-size:0.62em;opacity:0.38;margin-top:2px">전일比 {sd['chg']:+.2f}% &nbsp;·&nbsp; 120+ 경계 / 140+ 위험</div>
+</div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(mk_card("📐","SKEW","—"), unsafe_allow_html=True)
+
+    with si6:
+        dd = skew_dxy.get("DX-Y.NYB")
+        if dd:
+            dv = dd["price"]
+            dc = "#ef4444" if dd["chg"] >= 0 else "#3b82f6"
+            da = "▲" if dd["chg"] >= 0 else "▼"
+            dl = "달러 강세 (리스크오프 압력)" if dd["chg"] >= 0 else "달러 약세 (리스크온 우호)"
+            dxy_pct = min(max((dv - 90) / 30 * 100, 0), 100)   # 90~120 범위 정규화
+            st.markdown(f"""
+<div class="idx-card" style="text-align:left;padding:16px 18px">
+  <div style="font-size:0.65em;opacity:0.45;font-weight:600;letter-spacing:0.3px;margin-bottom:8px">💵 달러 인덱스 (DXY)</div>
+  <div style="display:flex;align-items:baseline;gap:8px">
+    <span style="font-size:1.55em;font-weight:800;color:{dc};letter-spacing:-1px">{dv:.2f}</span>
+    <span style="font-size:0.72em;color:{dc};font-weight:700">{da} {abs(dd['chg']):.2f}%</span>
+  </div>
+  <div class="fng-bar-wrap">
+    <div class="fng-bar" style="width:{dxy_pct:.1f}%;background:linear-gradient(90deg,#3b82f6,{dc})"></div>
+  </div>
+  <div style="font-size:0.62em;opacity:0.38;margin-top:2px">{dl}</div>
+</div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(mk_card("💵","DXY","—"), unsafe_allow_html=True)
+
+    with si7:
+        if aaii_bull is not None:
+            ac = "#34d399" if aaii_spread >= 10 else "#fbbf24" if aaii_spread >= -10 else "#f87171"
+            al = "강세 우세" if aaii_spread >= 10 else "팽팽" if aaii_spread >= -10 else "약세 우세"
+            a_pct = min(max((aaii_spread + 50) / 100 * 100, 0), 100)
+            st.markdown(f"""
+<div class="idx-card" style="text-align:left;padding:16px 18px">
+  <div style="font-size:0.65em;opacity:0.45;font-weight:600;letter-spacing:0.3px;margin-bottom:8px">📋 AAII 투자자 심리 (주간)</div>
+  <div style="display:flex;align-items:baseline;gap:8px">
+    <span style="font-size:1.55em;font-weight:800;color:{ac};letter-spacing:-1px">{aaii_spread:+.0f}pt</span>
+    <span style="font-size:0.72em;color:{ac};font-weight:700">{al}</span>
+  </div>
+  <div class="fng-bar-wrap">
+    <div class="fng-bar" style="width:{a_pct:.1f}%;background:linear-gradient(90deg,#f87171,{ac})"></div>
+  </div>
+  <div style="font-size:0.62em;opacity:0.38;margin-top:2px">강세 {aaii_bull:.0f}% · 약세 {aaii_bear:.0f}% &nbsp;({aaii_date})</div>
+</div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(mk_card("📋","AAII 심리","—"), unsafe_allow_html=True)
 
     # ── 거시 경제지표 (FRED) ──
     st.markdown(sec_hdr("🏛️", "거시 경제지표"), unsafe_allow_html=True)
@@ -943,109 +1113,91 @@ if "시장 동향" in menu:
             st.markdown(fred_card("👷","실업률", un_v,"%", un_c, un_d,
                 lambda v: "#34d399" if v<4 else "#fbbf24" if v<5 else "#f87171"), unsafe_allow_html=True)
 
-    # ── 관심 섹터 ETF ──
-    st.markdown(sec_hdr("📊", "관심 섹터 ETF"), unsafe_allow_html=True)
+    # ── 관심 섹터 (대표 종목 바스켓) ──
+    st.markdown(sec_hdr("📊", "관심 섹터"), unsafe_allow_html=True)
 
-    # 헤더 행
-    _, hus, hkr = st.columns([1, 4, 4])
-    with hus:
-        st.markdown('<div style="font-size:0.65em;opacity:0.42;font-weight:700;letter-spacing:1.5px;margin-bottom:2px;text-align:center">🇺🇸 미국 ETF</div>', unsafe_allow_html=True)
-    with hkr:
-        st.markdown('<div style="font-size:0.65em;opacity:0.42;font-weight:700;letter-spacing:1.5px;margin-bottom:2px;text-align:center">🇰🇷 한국 ETF</div>', unsafe_allow_html=True)
-
-    # ── 핫 트렌드 ETF 카테고리 (섹터 기준 정렬) ──
-    ETF_CATS = [
-        {
-            "icon": "💾", "name": "반도체",
-            "US": {"SOXX":"반도체(대형)", "SMH":"반도체", "SOXQ":"반도체(소형)"},
-            "KR": {"091160.KS":"KODEX 반도체", "364970.KS":"TIGER 반도체"}
-        },
-        {
-            "icon": "🤖", "name": "AI",
-            "US": {"AIQ":"AI 전반", "BOTZ":"AI플랫폼", "ARKW":"차세대인터넷"},
-            "KR": {}
-        },
-        {
-            "icon": "⚡", "name": "전력\n인프라",
-            "US": {"XLU":"공익(전력)", "ICLN":"클린에너지"},
-            "KR": {"396520.KS":"탄소중립액티브"}
-        },
-        {
-            "icon": "⚛️", "name": "원자력",
-            "US": {"NLR":"원자력ETF", "URNM":"우라늄", "URA":"우라늄(소형)"},
-            "KR": {}
-        },
-        {
-            "icon": "🦾", "name": "휴머노이드\n로봇",
-            "US": {"ROBO":"로봇·자동화", "IRBO":"로봇(iShares)", "ARKQ":"자율주행·AI"},
-            "KR": {"394670.KS":"TIGER 로보틱스"}
-        },
-        {
-            "icon": "🛡️", "name": "방산",
-            "US": {"ITA":"항공·방산", "XAR":"항공우주방산"},
-            "KR": {"371460.KS":"TIGER K방산"}
-        },
-        {
-            "icon": "🧬", "name": "바이오",
-            "US": {"IBB":"바이오테크", "XBI":"바이오(소형)", "ARKG":"게놈혁신"},
-            "KR": {"244580.KS":"KODEX 바이오"}
-        },
-        {
-            "icon": "🔋", "name": "2차전지",
-            "US": {"LIT":"리튬·배터리", "BATT":"배터리테크"},
-            "KR": {"305720.KS":"TIGER 2차전지", "278540.KS":"KODEX 2차전지"}
-        },
-        {
-            "icon": "🚢", "name": "조선",
-            "US": {},
-            "KR": {"395160.KS":"TIGER 조선TOP10", "427140.KS":"KODEX 조선"}
-        },
-        {
-            "icon": "🔬", "name": "반도체\n소부장",
-            "US": {"FTXL":"나스닥반도체", "PSI":"반도체장비·소재"},
-            "KR": {"381180.KS":"KODEX AI반도체장비", "411060.KS":"AI반도체소부장"}
-        },
+    SECTOR_BASKETS = [
+        {"icon":"💾","name":"반도체",
+         "tickers":["NVDA","TSM","AVGO","AMD","ARM","QCOM","MU","INTC","005930.KS","000660.KS"]},
+        {"icon":"🤖","name":"AI\n소프트웨어",
+         "tickers":["MSFT","GOOGL","META","AMZN","ORCL","CRM","PLTR","AI","PATH"]},
+        {"icon":"☁️","name":"클라우드",
+         "tickers":["AMZN","MSFT","GOOGL","SNOW","NET","DDOG","MDB","CFLT","GTLB"]},
+        {"icon":"💡","name":"AI 광학",
+         "tickers":["COHR","LITE","MRVL","GLW","CIEN","GFS","AAOI","POET"]},
+        {"icon":"⚡","name":"전력\n인프라",
+         "tickers":["NEE","CEG","VST","PWR","NVT","PRIM","015760.KS","010120.KS"]},
+        {"icon":"⚛️","name":"원자력",
+         "tickers":["CEG","BWXT","CCJ","OKLO","NNE","SMR","LTBR","034020.KS","052690.KS"]},
+        {"icon":"🦾","name":"휴머노이드\n로봇",
+         "tickers":["TSLA","NVDA","ABB","ROK","HON","005380.KS","454910.KS","277810.KQ","108490.KQ"]},
+        {"icon":"🛡️","name":"방산",
+         "tickers":["RTX","LMT","NOC","BA","GD","012450.KS","079550.KS","064350.KS","047810.KS"]},
+        {"icon":"🧬","name":"바이오",
+         "tickers":["LLY","ABBV","RXRX","ABSI","SDAI","SANA","EXAI","207940.KS","068270.KS"]},
+        {"icon":"🔮","name":"양자\n컴퓨팅",
+         "tickers":["IBM","IONQ","RGTI","QUBT","QMCO","ARQQ"]},
+        {"icon":"🖥️","name":"데이터\n센터",
+         "tickers":["EQIX","AMT","DLR","VRT","DELL","SMCI","HPE","NTAP"]},
+        {"icon":"🔬","name":"반도체\n장비",
+         "tickers":["ASML","AMAT","LRCX","KLAC","TER","ONTO","042700.KS","039030.KS"]},
+        {"icon":"🚢","name":"조선",
+         "tickers":["009540.KS","010140.KS","042660.KS","010620.KS"]},
+        {"icon":"🔋","name":"2차전지",
+         "tickers":["373220.KS","006400.KS","096770.KS","247540.KS","003670.KS","ALB","MP"]},
     ]
 
-    def etf_bar(etf_dict, height=160):
-        if not etf_dict:
-            st.caption("—")
-            return
-        data  = get_etf_chg(list(etf_dict.keys()))
-        valid = {k: v for k, v in data.items() if v is not None}
-        if not valid:
+    # 전체 티커 한 번에 로딩 (캐시 효율 극대화)
+    _all_sector_tks = list({tk for cat in SECTOR_BASKETS for tk in cat["tickers"]})
+    with st.spinner(""):
+        _sector_data = get_index_data(_all_sector_tks)
+
+    def sector_basket_bar(tickers):
+        labels, vals = [], []
+        for tk in tickers:
+            d = _sector_data.get(tk)
+            if d is None:
+                continue
+            is_kr = ".KS" in tk or ".KQ" in tk
+            flag  = "🇰🇷" if is_kr else "🇺🇸"
+            name  = stock_display_name(tk, short=True) if tk in STOCK_NAMES else tk
+            labels.append(f"{flag} {name}")
+            vals.append(d["chg"])
+        if not labels:
             st.caption("데이터 없음")
             return
-        srt    = sorted(valid.items(), key=lambda x: x[1], reverse=True)
-        labels = [etf_dict[k] for k, _ in srt]
-        vals   = [v for _, v in srt]
+        paired = sorted(zip(vals, labels), reverse=True)
+        vals   = [v for v, _ in paired]
+        labels = [l for _, l in paired]
+        n      = len(labels)
+        row_h  = max(n * 16 + 12, 60)
         colors = ["#ef4444" if v >= 0 else "#3b82f6" for v in vals]
+        x_abs  = max((abs(v) for v in vals), default=1) * 1.5
         fig = go.Figure(go.Bar(
             x=vals, y=labels, orientation="h",
-            marker_color=colors, opacity=0.8,
+            marker_color=colors, opacity=0.82,
             width=0.28,
             text=[f"{v:+.2f}%" for v in vals],
             textposition="outside",
             textfont=dict(color="rgba(128,128,128,0.65)", size=8, family="Pretendard")
         ))
         fig.update_layout(
-            height=height, margin=dict(t=2, b=2, l=4, r=50),
+            height=row_h, margin=dict(t=2, b=2, l=4, r=55),
             bargap=0.68,
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(128,128,128,0.04)",
             font=dict(color="rgba(128,128,128,0.6)", family="Pretendard"),
             xaxis=dict(showgrid=True, gridcolor="rgba(128,128,128,0.08)",
-                       color="rgba(128,128,128,0.4)",
-                       ticksuffix="%", zeroline=True, zerolinecolor="rgba(128,128,128,0.2)"),
+                       color="rgba(128,128,128,0.4)", ticksuffix="%",
+                       zeroline=True, zerolinecolor="rgba(128,128,128,0.2)",
+                       range=[-x_abs, x_abs]),
             yaxis=dict(showgrid=False, color="rgba(128,128,128,0.6)", tickfont=dict(size=8)),
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-    for cat in ETF_CATS:
-        n = max(len(cat["US"]), len(cat["KR"]))
+    for cat in SECTOR_BASKETS:
+        col_label, col_chart = st.columns([1, 8])
+        n = len(cat["tickers"])
         row_h = max(n * 16 + 12, 60)
-
-        col_label, col_us, col_kr = st.columns([1, 4, 4])
-
         with col_label:
             st.markdown(f"""
 <div style="height:{row_h}px;display:flex;flex-direction:column;
@@ -1057,15 +1209,8 @@ if "시장 동향" in menu:
   <div style="font-size:0.62em;font-weight:700;opacity:0.55;line-height:1.5;
               letter-spacing:0.3px;white-space:pre-line">{cat['name']}</div>
 </div>""", unsafe_allow_html=True)
-
-        with col_us:
-            with st.spinner(""):
-                etf_bar(cat["US"], height=row_h)
-
-        with col_kr:
-            with st.spinner(""):
-                etf_bar(cat["KR"], height=row_h)
-
+        with col_chart:
+            sector_basket_bar(cat["tickers"])
         st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
     st.markdown("<hr class='dot-divider'>", unsafe_allow_html=True)
