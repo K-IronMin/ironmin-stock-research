@@ -744,13 +744,13 @@ def mk_card(icon, label, val_str, chg=None, sub=None):
     if chg is not None:
         c = "#ef4444" if chg>=0 else "#3b82f6"
         a = "▲" if chg>=0 else "▼"
-        chg_html = f'<div style="font-size:0.75em;color:{c};font-weight:600;margin-top:4px">{a} {abs(chg):.2f}%</div>'
+        chg_html = f'<div style="font-size:0.75em;color:{c};font-weight:600;margin-top:1px">{a} {abs(chg):.2f}%</div>'
     else:
         chg_html = ""
-    sub_html = f'<div style="font-size:0.62em;opacity:0.38;margin-top:2px">{sub}</div>' if sub else ""
+    sub_html = f'<div style="font-size:0.62em;opacity:0.38;margin-top:1px">{sub}</div>' if sub else ""
     return f"""
 <div class="idx-card">
-  <div style="font-size:0.62em;opacity:0.42;margin-bottom:4px;font-weight:600;letter-spacing:0.3px">{icon} {label}</div>
+  <div style="font-size:0.62em;opacity:0.42;margin-bottom:2px;font-weight:600;letter-spacing:0.3px">{icon} {label}</div>
   <div style="font-size:1.0em;font-weight:700;letter-spacing:-0.3px">{val_str}</div>
   {chg_html}{sub_html}
 </div>"""
@@ -808,23 +808,31 @@ if "시장 동향" in menu:
     st.markdown(sec_hdr("🌐", "주요 지수"), unsafe_allow_html=True)
     IDX   = {"S&P 500":"^GSPC","NASDAQ":"^IXIC","Dow Jones":"^DJI","필라델피아반도체":"^SOX","러셀 2000":"^RUT","KOSPI":"^KS11","KOSDAQ":"^KQ11"}
     FLAGS = {"S&P 500":"🇺🇸","NASDAQ":"🇺🇸","Dow Jones":"🇺🇸","필라델피아반도체":"🇺🇸","러셀 2000":"🇺🇸","KOSPI":"🇰🇷","KOSDAQ":"🇰🇷"}
+    IDX2  = {"니케이 225":"^N225","상해종합":"000001.SS","항셍":"^HSI","대만가권":"^TWII","인도 SENSEX":"^BSESN","유로스톡스50":"^STOXX50E","브라질 IBOV":"^BVSP","아르헨티나 MER":"^MERV"}
+    FLAGS2= {"니케이 225":"🇯🇵","상해종합":"🇨🇳","항셍":"🇭🇰","대만가권":"🇹🇼","인도 SENSEX":"🇮🇳","유로스톡스50":"🇪🇺","브라질 IBOV":"🇧🇷","아르헨티나 MER":"🇦🇷"}
+    _all_idx = list(IDX.values()) + list(IDX2.values())
     with st.spinner(""):
-        idx = get_index_data(list(IDX.values()))
+        idx = get_index_data(_all_idx)
     for col,(label,tk) in zip(st.columns(7), IDX.items()):
         d = idx.get(tk)
         with col:
             if d: st.markdown(mk_card(FLAGS[label], label, f"{d['price']:,.2f}", d["chg"]), unsafe_allow_html=True)
             else: st.markdown(mk_card(FLAGS[label], label, "—"), unsafe_allow_html=True)
+    for col,(label,tk) in zip(st.columns(8), IDX2.items()):
+        d = idx.get(tk)
+        with col:
+            if d: st.markdown(mk_card(FLAGS2[label], label, f"{d['price']:,.2f}", d["chg"]), unsafe_allow_html=True)
+            else: st.markdown(mk_card(FLAGS2[label], label, "—"), unsafe_allow_html=True)
 
     # ── 환율 · 원자재 · 암호화폐 ──
     st.markdown(sec_hdr("💱", "환율 · 원자재 · 암호화폐"), unsafe_allow_html=True)
-    COMM      = {"USD/KRW":"KRW=X","금($/oz)":"GC=F","WTI 원유":"CL=F","브렌트유":"BZ=F","비트코인":"BTC-USD"}
-    COMM_DEC  = {"USD/KRW":0,"금($/oz)":0,"WTI 원유":2,"브렌트유":2,"비트코인":0}
-    COMM_ICON = {"USD/KRW":"💱","금($/oz)":"🥇","WTI 원유":"🛢","브렌트유":"🛢","비트코인":"₿"}
-    COMM_PFX  = {"USD/KRW":"","금($/oz)":"$","WTI 원유":"$","브렌트유":"$","비트코인":"$"}
+    COMM      = {"USD/KRW":"KRW=X","금($/oz)":"GC=F","WTI 원유":"CL=F","브렌트유":"BZ=F","구리":"HG=F","은":"SI=F","천연가스":"NG=F","비트코인":"BTC-USD"}
+    COMM_DEC  = {"USD/KRW":0,"금($/oz)":0,"WTI 원유":2,"브렌트유":2,"구리":3,"은":2,"천연가스":3,"비트코인":0}
+    COMM_ICON = {"USD/KRW":"💱","금($/oz)":"🥇","WTI 원유":"🛢","브렌트유":"🛢","구리":"🔶","은":"🪙","천연가스":"🔥","비트코인":"₿"}
+    COMM_PFX  = {"USD/KRW":"","금($/oz)":"$","WTI 원유":"$","브렌트유":"$","구리":"$","은":"$","천연가스":"$","비트코인":"$"}
     with st.spinner(""):
         comm_data = get_index_data(list(COMM.values()))
-    for col,(label,tk) in zip(st.columns(5), COMM.items()):
+    for col,(label,tk) in zip(st.columns(8), COMM.items()):
         d = comm_data.get(tk)
         with col:
             if d:
