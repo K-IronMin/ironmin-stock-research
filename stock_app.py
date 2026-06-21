@@ -259,6 +259,36 @@ hr { opacity: 0.12 !important; margin: 12px 0 !important; }
   border:none; border-top:1px dashed rgba(128,128,128,0.12);
   margin:18px 0;
 }
+
+/* ══ 모바일 반응형 ══ */
+@media (max-width: 768px) {
+  /* 패딩 축소 */
+  .main .block-container { padding: 0.8rem 0.7rem 3rem !important; max-width: 100% !important; }
+
+  /* 컬럼 세로 배치 */
+  [data-testid="column"] {
+    width: 100% !important;
+    flex: 1 1 100% !important;
+    min-width: 100% !important;
+  }
+
+  /* 메트릭 카드 조정 */
+  [data-testid="stMetricValue"] { font-size: 1em !important; }
+  [data-testid="stMetricLabel"] { font-size: 0.6em !important; }
+  [data-testid="stMetric"] { padding: 9px 11px !important; }
+
+  /* 제목/텍스트 */
+  h1 { font-size: 1.1em !important; }
+  h2 { font-size: 0.95em !important; }
+  p  { font-size: 0.84em !important; }
+
+  /* 카드 패딩 */
+  .card { padding: 14px 15px !important; }
+  .theme-card { padding: 13px 14px !important; }
+
+  /* 차트 스크롤 허용 */
+  [data-testid="stPlotlyChart"] { overflow-x: auto !important; }
+}
 </style>
 """, unsafe_allow_html=True)
 
