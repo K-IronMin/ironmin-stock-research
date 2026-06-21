@@ -405,6 +405,7 @@ STOCK_NAMES = {
     # ── 바이오 ──
     "LLY":  ("일라이릴리", "Eli Lilly"),
     "ABBV": ("애브비", "AbbVie"),
+    "TEVA": ("테바파마슈티컬", "Teva Pharmaceutical"),
     # ── 양자컴퓨팅 ──
     "IBM":  ("IBM", "IBM"),
     "IONQ": ("아이온큐", "IonQ"),
@@ -558,6 +559,25 @@ def get_etf_chg(tickers):
                 out[tk] = (c-p)/p*100
         except: out[tk] = None
     return out
+
+@st.cache_data(ttl=3600*4)
+def get_yearly_returns(tickers: tuple) -> dict:
+    """섹터 전체 티커 1년 수익률 배치 조회"""
+    result = {}
+    try:
+        tks = list(tickers)
+        raw = yf.download(tks, period="1y", auto_adjust=True, progress=False)
+        closes = raw["Close"] if "Close" in raw.columns else raw
+        if isinstance(closes, pd.Series):
+            closes = closes.to_frame(tks[0])
+        for tk in tks:
+            if tk in closes.columns:
+                col = closes[tk].dropna()
+                if len(col) >= 2:
+                    result[tk] = (col.iloc[-1] / col.iloc[0] - 1) * 100
+    except:
+        pass
+    return result
 
 def get_price(tk):
     try: return yf.Ticker(tk).fast_info.last_price
@@ -913,7 +933,7 @@ if "시장 동향" in menu:
   <div class="fng-bar-wrap">
     <div class="fng-bar" style="width:{pct}%;background:linear-gradient(90deg,#ef4444,{fc})"></div>
   </div>
-  <div style="font-size:0.62em;opacity:0.38;margin-top:2px">전일比 {chg_sign}</div>
+  <div style="font-size:0.62em;opacity:0.38;margin-top:2px">전일比 {chg_sign} &nbsp;·&nbsp; 25↓ 공포 / 75↑ 탐욕</div>
 </div>"""
 
     cnn_val, cnn_chg, cnn_lbl = get_cnn_fng()
@@ -944,7 +964,7 @@ if "시장 동향" in menu:
   <div class="fng-bar-wrap">
     <div class="fng-bar" style="width:{vix_pct:.1f}%;background:linear-gradient(90deg,#22c55e,{vc})"></div>
   </div>
-  <div style="font-size:0.62em;opacity:0.38;margin-top:2px">전일比 {vd['chg']:+.2f}%</div>
+  <div style="font-size:0.62em;opacity:0.38;margin-top:2px">전일比 {vd['chg']:+.2f}% &nbsp;·&nbsp; 18↑ 경계 / 25↑ 위험</div>
 </div>""", unsafe_allow_html=True)
         else:
             st.markdown(mk_card("📉","VIX","—"), unsafe_allow_html=True)
@@ -966,7 +986,7 @@ if "시장 동향" in menu:
   <div class="fng-bar-wrap">
     <div class="fng-bar" style="width:{pc_pct:.1f}%;background:linear-gradient(90deg,#22c55e,{pc})"></div>
   </div>
-  <div style="font-size:0.62em;opacity:0.38;margin-top:2px">만기 {pc_exp}</div>
+  <div style="font-size:0.62em;opacity:0.38;margin-top:2px">만기 {pc_exp} &nbsp;·&nbsp; 0.7↓ 낙관 / 1.0↑ 공포</div>
 </div>""", unsafe_allow_html=True)
         else:
             st.markdown(mk_card("📊","풋/콜 비율","—"), unsafe_allow_html=True)
@@ -1117,7 +1137,7 @@ if "시장 동향" in menu:
     st.markdown(sec_hdr("📊", "관심 섹터"), unsafe_allow_html=True)
 
     SECTOR_BASKETS = [
-        {"icon":"💾","name":"반도체",
+        {"icon":"🔲","name":"반도체",
          "tickers":["NVDA","TSM","AVGO","AMD","ARM","QCOM","MU","INTC","005930.KS","000660.KS"]},
         {"icon":"🤖","name":"AI\n소프트웨어",
          "tickers":["MSFT","GOOGL","META","AMZN","ORCL","CRM","PLTR","AI","PATH"]},
@@ -1134,7 +1154,7 @@ if "시장 동향" in menu:
         {"icon":"🛡️","name":"방산",
          "tickers":["RTX","LMT","NOC","BA","GD","012450.KS","079550.KS","064350.KS","047810.KS"]},
         {"icon":"🧬","name":"바이오",
-         "tickers":["LLY","ABBV","RXRX","ABSI","SDAI","SANA","EXAI","207940.KS","068270.KS"]},
+         "tickers":["LLY","ABBV","TEVA","RXRX","ABSI","SDAI","SANA","EXAI","207940.KS","068270.KS"]},
         {"icon":"🔮","name":"양자\n컴퓨팅",
          "tickers":["IBM","IONQ","RGTI","QUBT","QMCO","ARQQ"]},
         {"icon":"🖥️","name":"데이터\n센터",
@@ -1147,71 +1167,96 @@ if "시장 동향" in menu:
          "tickers":["373220.KS","006400.KS","096770.KS","247540.KS","003670.KS","ALB","MP"]},
     ]
 
-    # 전체 티커 한 번에 로딩 (캐시 효율 극대화)
-    _all_sector_tks = list({tk for cat in SECTOR_BASKETS for tk in cat["tickers"]})
+    # 전체 티커 한 번에 로딩
+    BIGTECH_TKS = ["AAPL","MSFT","GOOGL","AMZN","META","NVDA","TSLA","AVGO","TSM"]
+    _all_sector_tks = tuple({tk for cat in SECTOR_BASKETS for tk in cat["tickers"]} | set(BIGTECH_TKS))
     with st.spinner(""):
-        _sector_data = get_index_data(_all_sector_tks)
+        _sector_data = get_index_data(list(_all_sector_tks))
+        _yearly_data = get_yearly_returns(_all_sector_tks)
 
-    def sector_basket_bar(tickers):
-        labels, vals = [], []
-        for tk in tickers:
+    # ── 빅테크 체온계 ──
+    st.markdown(sec_hdr("🌡️", "빅테크 체온계"), unsafe_allow_html=True)
+    bt_cols = st.columns(len(BIGTECH_TKS))
+    for _col, _tk in zip(bt_cols, BIGTECH_TKS):
+        _d    = _sector_data.get(_tk)
+        _nm   = stock_display_name(_tk, short=True) if _tk in STOCK_NAMES else _tk
+        _url  = stock_link_url(_tk)
+        with _col:
+            if _d:
+                _c = "#ef4444" if _d["chg"] >= 0 else "#3b82f6"
+                _a = "▲" if _d["chg"] >= 0 else "▼"
+                st.markdown(f"""
+<div class="idx-card" style="padding:8px 5px;text-align:center">
+  <div style="font-size:0.6em;opacity:0.45;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+    <a href="{_url}" target="_blank" style="color:inherit;text-decoration:none">{_nm}</a>
+  </div>
+  <div style="font-size:0.9em;font-weight:800;color:{_c}">{_a}{abs(_d['chg']):.2f}%</div>
+</div>""", unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="idx-card" style="padding:8px 5px;text-align:center"><div style="font-size:0.6em;opacity:0.4">{_nm}</div><div style="font-size:0.9em;opacity:0.25">—</div></div>', unsafe_allow_html=True)
+
+    # ── 관심 섹터 ──
+    st.markdown(sec_hdr("📊", "관심 섹터"), unsafe_allow_html=True)
+
+    def render_sector_card(cat):
+        rows_data = []
+        for tk in cat["tickers"]:
             d = _sector_data.get(tk)
             if d is None:
                 continue
+            rows_data.append((tk, d["chg"]))
+
+        if not rows_data:
+            return
+
+        rows_data.sort(key=lambda x: x[1], reverse=True)
+        avg   = sum(c for _, c in rows_data) / len(rows_data)
+        avg_c = "#ef4444" if avg >= 0 else "#3b82f6"
+
+        rows_html = ""
+        for tk, chg in rows_data:
             is_kr = ".KS" in tk or ".KQ" in tk
             flag  = "🇰🇷" if is_kr else "🇺🇸"
-            name  = stock_display_name(tk, short=True) if tk in STOCK_NAMES else tk
-            labels.append(f"{flag} {name}")
-            vals.append(d["chg"])
-        if not labels:
-            st.caption("데이터 없음")
-            return
-        paired = sorted(zip(vals, labels), reverse=True)
-        vals   = [v for v, _ in paired]
-        labels = [l for _, l in paired]
-        n      = len(labels)
-        row_h  = max(n * 16 + 12, 60)
-        colors = ["#ef4444" if v >= 0 else "#3b82f6" for v in vals]
-        x_abs  = max((abs(v) for v in vals), default=1) * 1.5
-        fig = go.Figure(go.Bar(
-            x=vals, y=labels, orientation="h",
-            marker_color=colors, opacity=0.82,
-            width=0.28,
-            text=[f"{v:+.2f}%" for v in vals],
-            textposition="outside",
-            textfont=dict(color="rgba(128,128,128,0.65)", size=8, family="Pretendard")
-        ))
-        fig.update_layout(
-            height=row_h, margin=dict(t=2, b=2, l=4, r=55),
-            bargap=0.68,
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(128,128,128,0.04)",
-            font=dict(color="rgba(128,128,128,0.6)", family="Pretendard"),
-            xaxis=dict(showgrid=True, gridcolor="rgba(128,128,128,0.08)",
-                       color="rgba(128,128,128,0.4)", ticksuffix="%",
-                       zeroline=True, zerolinecolor="rgba(128,128,128,0.2)",
-                       range=[-x_abs, x_abs]),
-            yaxis=dict(showgrid=False, color="rgba(128,128,128,0.6)", tickfont=dict(size=8)),
-        )
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            nm    = stock_display_name(tk, short=True) if tk in STOCK_NAMES else tk
+            url   = stock_link_url(tk)
+            dc    = "#ef4444" if chg >= 0 else "#3b82f6"
+            yr    = _yearly_data.get(tk)
+            yr_html = f'<span style="color:{"#ef4444" if yr >= 0 else "#3b82f6"}">{yr:+.0f}%</span>' if yr is not None else '<span style="opacity:0.25">—</span>'
+            rows_html += f"""
+<div style="display:flex;align-items:center;padding:2px 5px;border-radius:3px">
+  <div style="flex:1;font-size:0.75em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">
+    <span style="opacity:0.38;font-size:0.82em">{flag}</span>
+    <a href="{url}" target="_blank" style="color:inherit;text-decoration:none;margin-left:2px">{nm}</a>
+  </div>
+  <div style="font-size:0.75em;font-weight:700;color:{dc};min-width:50px;text-align:right">{chg:+.2f}%</div>
+  <div style="font-size:0.7em;min-width:46px;text-align:right;opacity:0.65">{yr_html}</div>
+</div>"""
 
-    for cat in SECTOR_BASKETS:
-        col_label, col_chart = st.columns([1, 8])
-        n = len(cat["tickers"])
-        row_h = max(n * 16 + 12, 60)
-        with col_label:
-            st.markdown(f"""
-<div style="height:{row_h}px;display:flex;flex-direction:column;
-            justify-content:center;align-items:center;
-            background:var(--secondary-background-color);
-            border:1px solid rgba(128,128,128,0.13);border-radius:10px;
-            padding:8px 4px;text-align:center">
-  <div style="font-size:1.3em;margin-bottom:4px">{cat['icon']}</div>
-  <div style="font-size:0.62em;font-weight:700;opacity:0.55;line-height:1.5;
-              letter-spacing:0.3px;white-space:pre-line">{cat['name']}</div>
+        sector_name = cat['name'].replace('\n', ' ')
+        st.markdown(f"""
+<div style="background:var(--secondary-background-color);border:1px solid rgba(128,128,128,0.13);
+            border-radius:10px;padding:9px 8px 5px;margin-bottom:6px">
+  <div style="display:flex;justify-content:space-between;align-items:center;padding:0 5px;margin-bottom:4px">
+    <div style="font-size:0.78em;font-weight:700">{cat['icon']} {sector_name}</div>
+    <div style="font-size:0.72em;font-weight:700;color:{avg_c}">avg {avg:+.2f}%</div>
+  </div>
+  <div style="display:flex;font-size:0.58em;opacity:0.3;font-weight:600;letter-spacing:0.4px;
+              padding:0 5px 3px;border-bottom:1px solid rgba(128,128,128,0.08);margin-bottom:1px">
+    <div style="flex:1">종목</div>
+    <div style="min-width:50px;text-align:right">당일</div>
+    <div style="min-width:46px;text-align:right">1년</div>
+  </div>
+  {rows_html}
 </div>""", unsafe_allow_html=True)
-        with col_chart:
-            sector_basket_bar(cat["tickers"])
-        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+    # 2열 배치
+    for i in range(0, len(SECTOR_BASKETS), 2):
+        c1, c2 = st.columns(2)
+        with c1:
+            render_sector_card(SECTOR_BASKETS[i])
+        with c2:
+            if i + 1 < len(SECTOR_BASKETS):
+                render_sector_card(SECTOR_BASKETS[i + 1])
 
     st.markdown("<hr class='dot-divider'>", unsafe_allow_html=True)
 
