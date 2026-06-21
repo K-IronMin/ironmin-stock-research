@@ -365,7 +365,50 @@ STOCK_NAMES = {
     "EXAI": ("엑사이바이오", "Exai Bio"),
     "SPY": ("S&P500 ETF", "SPDR S&P 500 ETF"),
     "QQQ": ("나스닥100 ETF", "Invesco QQQ"),
+    # ── 추가 한국 주식 ──
+    "039440.KS": ("오이솔루션", None),
+    "094280.KQ": ("옵티시스", None),
+    "015760.KS": ("한국전력", None),
+    "010120.KS": ("LS ELECTRIC", None),
+    "034020.KS": ("두산에너빌리티", None),
+    "052690.KS": ("한전기술", None),
+    "454910.KS": ("두산로보틱스", None),
+    "277810.KQ": ("레인보우로보틱스", None),
+    "207940.KS": ("삼성바이오로직스", None),
+    "068270.KS": ("셀트리온", None),
 }
+
+# 이름 → 티커 역방향 매핑 (소문자 키)
+_NAME_TO_TK: dict[str, str] = {}
+for _tk, (_kn, _en) in STOCK_NAMES.items():
+    _NAME_TO_TK[_kn.lower()] = _tk
+    if _en:
+        _NAME_TO_TK[_en.lower()] = _tk
+
+def resolve_ticker(inp: str) -> tuple[str, str | None]:
+    """
+    사용자 입력 → (정규 티커, 힌트 메시지)
+    지원 형식: 티커(AAPL), 숫자 6자리(005930), 한국명(삼성전자), 영어명(Apple)
+    """
+    s = inp.strip()
+    if not s:
+        return s, None
+    # 6자리 숫자 → KOSPI
+    if s.isdigit() and len(s) == 6:
+        return s + ".KS", None
+    # 정확히 일치하는 이름
+    lo = s.lower()
+    if lo in _NAME_TO_TK:
+        tk = _NAME_TO_TK[lo]
+        return tk, f"'{s}' → {tk}"
+    # 부분 일치 (가나다 순 첫 번째)
+    matches = [(name, tk) for name, tk in _NAME_TO_TK.items() if lo in name]
+    if matches:
+        _, tk = sorted(matches)[0]
+        nm = stock_display_name(tk, short=True)
+        return tk, f"'{s}' → {nm} ({tk})"
+    # 그대로 티커로 처리
+    return s.upper(), None
 
 def stock_display_name(ticker: str, short: bool = False) -> str:
     """티커 → 표시명 변환.
@@ -770,13 +813,10 @@ if "시장 동향" in menu:
     with si1:
         st.markdown(fng_gauge_card("😨", "CNN 공탐지수 (주식)", cnn_val, cnn_chg, cnn_lbl), unsafe_allow_html=True)
     with si2:
-        st.markdown(fng_gauge_card("₿", "공탐지수 (BTC)", btc_val, btc_chg, btc_lbl), unsafe_allow_html=True)
-    with si3:
         vd = vix_data.get("^VIX")
         if vd:
             vc = "#f87171" if vd["price"]>25 else "#fbbf24" if vd["price"]>18 else "#34d399"
             vl = "고변동성" if vd["price"]>25 else "경계" if vd["price"]>18 else "안정"
-            # VIX 게이지: 0~50 범위로 정규화
             vix_pct = min(vd['price'] / 50 * 100, 100)
             st.markdown(f"""
 <div class="idx-card" style="text-align:left;padding:16px 18px">
@@ -792,7 +832,7 @@ if "시장 동향" in menu:
 </div>""", unsafe_allow_html=True)
         else:
             st.markdown(mk_card("📉","VIX","—"), unsafe_allow_html=True)
-    with si4:
+    with si3:
         if pc_ratio is not None:
             if pc_ratio >= 1.2:   pc,pl = "#f87171","강한 공포"
             elif pc_ratio >= 0.9: pc,pl = "#fb923c","공포"
@@ -814,6 +854,8 @@ if "시장 동향" in menu:
 </div>""", unsafe_allow_html=True)
         else:
             st.markdown(mk_card("📊","풋/콜 비율","—"), unsafe_allow_html=True)
+    with si4:
+        st.markdown(fng_gauge_card("₿", "공탐지수 (BTC)", btc_val, btc_chg, btc_lbl), unsafe_allow_html=True)
 
     # ── 거시 경제지표 (FRED) ──
     st.markdown(sec_hdr("🏛️", "거시 경제지표"), unsafe_allow_html=True)
@@ -899,29 +941,54 @@ if "시장 동향" in menu:
     # ── 핫 트렌드 ETF 카테고리 (섹터 기준 정렬) ──
     ETF_CATS = [
         {
-            "icon": "🤖", "name": "AI\n인프라",
-            "US": {"BOTZ":"AI·로봇", "AIQ":"AI 전반", "ARKQ":"자율주행·AI"},
-            "KR": {"381180.KS":"KODEX AI반도체장비", "411060.KS":"ACE AI반도체소부장"}
-        },
-        {
-            "icon": "💾", "name": "반도체\nHBM",
+            "icon": "💾", "name": "반도체",
             "US": {"SOXX":"반도체(대형)", "SMH":"반도체", "SOXQ":"반도체(소형)"},
             "KR": {"091160.KS":"KODEX 반도체", "364970.KS":"TIGER 반도체"}
         },
         {
+            "icon": "🤖", "name": "AI",
+            "US": {"AIQ":"AI 전반", "BOTZ":"AI플랫폼", "ARKW":"차세대인터넷"},
+            "KR": {}
+        },
+        {
+            "icon": "⚡", "name": "전력\n인프라",
+            "US": {"XLU":"공익(전력)", "ICLN":"클린에너지"},
+            "KR": {"396520.KS":"탄소중립액티브"}
+        },
+        {
+            "icon": "⚛️", "name": "원자력",
+            "US": {"NLR":"원자력ETF", "URNM":"우라늄", "URA":"우라늄(소형)"},
+            "KR": {}
+        },
+        {
             "icon": "🦾", "name": "로봇\n자동화",
-            "US": {"ROBO":"로봇·자동화", "IRBO":"로봇(iShares)"},
+            "US": {"ROBO":"로봇·자동화", "IRBO":"로봇(iShares)", "ARKQ":"자율주행·AI"},
             "KR": {"394670.KS":"TIGER 로보틱스"}
         },
         {
-            "icon": "⚡", "name": "클린에너지\n원자력",
-            "US": {"ICLN":"클린에너지", "NLR":"원자력", "URNM":"우라늄"},
-            "KR": {"396520.KS":"TIGER 탄소중립액티브"}
+            "icon": "🛡️", "name": "방산",
+            "US": {"ITA":"항공·방산", "XAR":"항공우주방산"},
+            "KR": {"371460.KS":"TIGER K방산"}
         },
         {
-            "icon": "🖥️", "name": "기술\n전반",
-            "US": {"XLK":"기술 전반", "QQQ":"나스닥 100"},
-            "KR": {"305720.KS":"TIGER 2차전지테마", "278540.KS":"KODEX 2차전지산업"}
+            "icon": "🧬", "name": "바이오",
+            "US": {"IBB":"바이오테크", "XBI":"바이오(소형)", "ARKG":"게놈혁신"},
+            "KR": {"244580.KS":"KODEX 바이오"}
+        },
+        {
+            "icon": "🔋", "name": "2차전지",
+            "US": {"LIT":"리튬·배터리", "BATT":"배터리테크"},
+            "KR": {"305720.KS":"TIGER 2차전지", "278540.KS":"KODEX 2차전지"}
+        },
+        {
+            "icon": "🚢", "name": "조선",
+            "US": {},
+            "KR": {"395160.KS":"TIGER 조선TOP10", "427140.KS":"KODEX 조선"}
+        },
+        {
+            "icon": "🔬", "name": "반도체\n소부장",
+            "US": {"FTXL":"나스닥반도체", "PSI":"반도체장비·소재"},
+            "KR": {"381180.KS":"KODEX AI반도체장비", "411060.KS":"AI반도체소부장"}
         },
     ]
 
@@ -1100,8 +1167,8 @@ if "시장 동향" in menu:
             st.caption("현재 거래량 급등 종목이 없습니다. (기준: 20일 평균 대비 1.5배 이상)")
         else:
             # 헤더 행
-            hdr_cols = st.columns([2, 4, 2, 2, 3, 2])
-            _hdr_labels = ["티커", "종목명", "현재가", "등락률", "거래량 배율", "오늘 거래량"]
+            hdr_cols = st.columns([5, 2, 2, 3, 2])
+            _hdr_labels = ["종목명 / 티커", "현재가", "등락률", "거래량 배율", "오늘 거래량"]
             for _hc, _hl in zip(hdr_cols, _hdr_labels):
                 _hc.markdown(f'<div style="font-size:0.65em;opacity:0.38;font-weight:700;letter-spacing:1px;padding-bottom:4px;border-bottom:1px solid rgba(128,128,128,0.12)">{_hl}</div>', unsafe_allow_html=True)
 
@@ -1371,7 +1438,7 @@ elif "분석" in menu:
 
     s1, s2, s3 = st.columns([3, 1, 1])
     with s1:
-        stk = st.text_input("티커", placeholder="POET  /  AAOI  /  005930.KS")
+        stk = st.text_input("종목 검색", placeholder="삼성전자 · POET · NVDA · 005930")
     with s2:
         pm2 = {"3개월":"3mo", "6개월":"6mo", "1년":"1y", "2년":"2y"}
         pl2 = st.selectbox("차트 기간", list(pm2.keys()), index=2)
@@ -1380,7 +1447,9 @@ elif "분석" in menu:
         run2 = st.button("분석 실행", type="primary")
 
     if run2 and stk.strip():
-        tk = stk.strip().upper()
+        tk, _hint2 = resolve_ticker(stk.strip())
+        if _hint2:
+            st.caption(f"🔍 {_hint2}")
         with st.spinner(""):
             df   = get_hist(tk, pm2[pl2])
             info = get_info(tk)
@@ -1885,7 +1954,7 @@ elif "매매 신호" in menu:
 </div>""", unsafe_allow_html=True)
 
     s1,s2,s3=st.columns([2,1,1])
-    with s1: stk=st.text_input("티커",placeholder="AAPL · NVDA · 005930.KS · 000660.KS")
+    with s1: stk=st.text_input("종목 검색",placeholder="삼성전자 · SK하이닉스 · NVDA · 005930")
     with s2:
         pm={"3개월":"3mo","6개월":"6mo","1년":"1y","2년":"2y"}
         pl=st.selectbox("기간",list(pm.keys()),index=2)
@@ -1894,7 +1963,9 @@ elif "매매 신호" in menu:
         run=st.button("분석 실행",type="primary")
 
     if run and stk.strip():
-        tk=stk.strip().upper()
+        tk, _hint = resolve_ticker(stk.strip())
+        if _hint:
+            st.caption(f"🔍 {_hint}")
         is_kr = ".KS" in tk or ".KQ" in tk
         pfx_s = "₩" if is_kr else "$"
         with st.spinner(""):
