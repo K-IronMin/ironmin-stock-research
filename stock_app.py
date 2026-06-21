@@ -265,11 +265,12 @@ hr { opacity: 0.12 !important; margin: 12px 0 !important; }
   /* 패딩 축소 */
   .main .block-container { padding: 0.8rem 0.7rem 3rem !important; max-width: 100% !important; }
 
-  /* 컬럼 세로 배치 */
+  /* 컬럼 2열 배치 (지수/카드 등) */
   [data-testid="column"] {
-    width: 100% !important;
-    flex: 1 1 100% !important;
-    min-width: 100% !important;
+    width: 48% !important;
+    flex: 1 1 48% !important;
+    min-width: 48% !important;
+    max-width: 50% !important;
   }
 
   /* 메트릭 카드 조정 */
@@ -299,6 +300,97 @@ TRENDS_FILE = os.path.join(BASE_DIR, "market_trends.json")
 
 if "portfolio" not in st.session_state:
     st.session_state.portfolio = []
+
+# ── 종목명 매핑 ──────────────────────────────────
+# 형식: "TICKER": ("한국명", "영어명")  |  한국주식: ("한국명", None)
+STOCK_NAMES = {
+    # ── 한국 주식 ──
+    "000660.KS": ("SK하이닉스", None),
+    "005930.KS": ("삼성전자", None),
+    "012450.KS": ("한화에어로스페이스", None),
+    "079550.KS": ("LIG넥스원", None),
+    "064350.KS": ("현대로템", None),
+    "047810.KS": ("한국항공우주", None),
+    "000270.KS": ("기아", None),
+    "005380.KS": ("현대차", None),
+    "035420.KS": ("NAVER", None),
+    "035720.KS": ("카카오", None),
+    "068270.KS": ("셀트리온", None),
+    "207940.KS": ("삼성바이오로직스", None),
+    "003550.KS": ("LG", None),
+    "051910.KS": ("LG화학", None),
+    "006400.KS": ("삼성SDI", None),
+    "373220.KS": ("LG에너지솔루션", None),
+    # ── 미국 주식 ──
+    "NVDA": ("엔비디아", "NVIDIA"),
+    "AMD": ("AMD", "Advanced Micro Devices"),
+    "AVGO": ("브로드컴", "Broadcom"),
+    "TSM": ("TSMC", "Taiwan Semiconductor"),
+    "MU": ("마이크론", "Micron Technology"),
+    "SNDK": ("샌디스크", "SanDisk"),
+    "STX": ("씨게이트", "Seagate"),
+    "MRVL": ("마벨", "Marvell Technology"),
+    "ARM": ("ARM홀딩스", "ARM Holdings"),
+    "INTC": ("인텔", "Intel"),
+    "AAPL": ("애플", "Apple"),
+    "MSFT": ("마이크로소프트", "Microsoft"),
+    "GOOGL": ("알파벳", "Alphabet"),
+    "AMZN": ("아마존", "Amazon"),
+    "META": ("메타", "Meta Platforms"),
+    "TSLA": ("테슬라", "Tesla"),
+    "POET": ("POET테크", "POET Technologies"),
+    "AAOI": ("AAOI", "Applied Optoelectronics"),
+    "COHR": ("코히런트", "Coherent"),
+    "LITE": ("루멘텀", "Lumentum"),
+    "IIVI": ("II-VI", "II-VI Incorporated"),
+    "VST": ("비스트라", "Vistra Energy"),
+    "CEG": ("콘스텔레이션", "Constellation Energy"),
+    "PWR": ("퀀타서비스", "Quanta Services"),
+    "NVT": ("엔버트", "nVent Electric"),
+    "PRIM": ("프리머리스", "Primoris Services"),
+    "OKLO": ("오클로", "Oklo"),
+    "NNE": ("나노뉴클리어", "Nano Nuclear Energy"),
+    "BWXT": ("BWX테크", "BWX Technologies"),
+    "CCJ": ("캠에코", "Cameco"),
+    "LTBR": ("라이트브리지", "Lightbridge"),
+    "ARBE": ("아르베로보틱스", "Arbe Robotics"),
+    "MBOT": ("마이크로봇", "Microbot Medical"),
+    "BFLY": ("버터플라이", "Butterfly Network"),
+    "FIG": ("피규레이트", "Figurate"),
+    "ISRG": ("인튜이티브서지컬", "Intuitive Surgical"),
+    "RXRX": ("리커전파마", "Recursion Pharmaceuticals"),
+    "ABSI": ("앱사이", "Absci"),
+    "SDAI": ("SDAI", "SDAI"),
+    "SANA": ("사나바이오", "Sana Biotechnology"),
+    "EXAI": ("엑사이바이오", "Exai Bio"),
+    "SPY": ("S&P500 ETF", "SPDR S&P 500 ETF"),
+    "QQQ": ("나스닥100 ETF", "Invesco QQQ"),
+}
+
+def stock_display_name(ticker: str, short: bool = False) -> str:
+    """티커 → 표시명 변환.
+    short=True : 한국명만 반환 (공간 부족 시)
+    short=False: 한국명 (영어명) 형태, 한국주식은 한국명만
+    """
+    info = STOCK_NAMES.get(ticker.upper())
+    if info is None:
+        # 매핑 없음 → 티커 그대로
+        return ticker
+    kor_name, eng_name = info
+    if eng_name is None:
+        # 한국 주식
+        return kor_name
+    if short:
+        return kor_name
+    return f"{kor_name} ({eng_name})"
+
+def stock_label(ticker: str) -> str:
+    """카드/표 헤더용: 이름 + 티커 배지"""
+    is_kr = ".KS" in ticker or ".KQ" in ticker
+    name = stock_display_name(ticker)
+    if is_kr:
+        return name
+    return name  # ticker는 별도 표시
 
 # ── 데이터 함수 ───────────────────────────────────
 @st.cache_data(ttl=300)
@@ -425,12 +517,12 @@ def get_volume_surge(tickers, lookback=21):
             cl = df["Close"].iloc[-1]
             pr = df["Close"].iloc[-2]
             chg = (cl - pr) / pr * 100 if pr else 0
-            info = yf.Ticker(tk).fast_info
-            nm = tk
-            try:
-                nm = yf.Ticker(tk).info.get("shortName") or tk
-            except:
-                pass
+            nm = stock_display_name(tk) if tk in STOCK_NAMES else tk
+            if nm == tk:
+                try:
+                    nm = yf.Ticker(tk).info.get("shortName") or tk
+                except:
+                    pass
             results.append({
                 "ticker": tk, "name": nm,
                 "price": float(cl), "chg": float(chg),
@@ -502,7 +594,7 @@ def sec_hdr(icon, title):
 
 def mk_card(icon, label, val_str, chg=None, sub=None):
     if chg is not None:
-        c = "#22c55e" if chg>=0 else "#ef4444"
+        c = "#ef4444" if chg>=0 else "#3b82f6"
         a = "▲" if chg>=0 else "▼"
         chg_html = f'<div style="font-size:0.75em;color:{c};font-weight:600;margin-top:4px">{a} {abs(chg):.2f}%</div>'
     else:
@@ -845,30 +937,30 @@ if "시장 동향" in menu:
         srt    = sorted(valid.items(), key=lambda x: x[1], reverse=True)
         labels = [etf_dict[k] for k, _ in srt]
         vals   = [v for _, v in srt]
-        colors = ["#34d399" if v >= 0 else "#ef4444" for v in vals]
+        colors = ["#ef4444" if v >= 0 else "#3b82f6" for v in vals]
         fig = go.Figure(go.Bar(
             x=vals, y=labels, orientation="h",
-            marker_color=colors, opacity=0.85,
-            width=0.45,
+            marker_color=colors, opacity=0.8,
+            width=0.28,
             text=[f"{v:+.2f}%" for v in vals],
             textposition="outside",
-            textfont=dict(color="rgba(128,128,128,0.7)", size=9, family="Pretendard")
+            textfont=dict(color="rgba(128,128,128,0.65)", size=8, family="Pretendard")
         ))
         fig.update_layout(
-            height=height, margin=dict(t=4, b=4, l=6, r=56),
-            bargap=0.55,
+            height=height, margin=dict(t=2, b=2, l=4, r=50),
+            bargap=0.68,
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(128,128,128,0.04)",
             font=dict(color="rgba(128,128,128,0.6)", family="Pretendard"),
             xaxis=dict(showgrid=True, gridcolor="rgba(128,128,128,0.08)",
-                       color="rgba(128,128,128,0.45)",
+                       color="rgba(128,128,128,0.4)",
                        ticksuffix="%", zeroline=True, zerolinecolor="rgba(128,128,128,0.2)"),
-            yaxis=dict(showgrid=False, color="rgba(128,128,128,0.6)", tickfont=dict(size=9)),
+            yaxis=dict(showgrid=False, color="rgba(128,128,128,0.6)", tickfont=dict(size=8)),
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     for cat in ETF_CATS:
         n = max(len(cat["US"]), len(cat["KR"]))
-        row_h = max(n * 28 + 24, 100)
+        row_h = max(n * 16 + 12, 60)
 
         col_label, col_us, col_kr = st.columns([1, 4, 4])
 
@@ -1021,7 +1113,7 @@ if "시장 동향" in menu:
                 _rat  = _r["ratio"]
                 _vtd  = _r["vol_today"]
                 _vav  = _r["vol_avg"]
-                _cc   = "#4ade80" if _chg >= 0 else "#f87171"
+                _cc   = "#ef4444" if _chg >= 0 else "#3b82f6"
                 _ca   = "▲" if _chg >= 0 else "▼"
                 # 배율별 색상 (3배 이상: 빨강, 2배: 주황, 1.5배: 노랑)
                 _rc   = "#f87171" if _rat >= 3 else "#fb923c" if _rat >= 2 else "#fcd34d"
@@ -1036,16 +1128,14 @@ if "시장 동향" in menu:
                     if v >= 1000:  return f"{v/1000:.0f}K"
                     return str(v)
 
-                r_cols = st.columns([2, 4, 2, 2, 3, 2])
+                r_cols = st.columns([5, 2, 2, 3, 2])
                 with r_cols[0]:
-                    st.markdown(f'<div style="font-size:0.83em;font-weight:700;color:#93c5fd;padding:7px 0">{_tk}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="padding:7px 0"><div style="font-size:0.85em;font-weight:700">{_nm[:24]}</div><div style="font-size:0.7em;opacity:0.4;letter-spacing:0.4px;margin-top:1px">{_tk}</div></div>', unsafe_allow_html=True)
                 with r_cols[1]:
-                    st.markdown(f'<div style="font-size:0.78em;opacity:0.6;padding:7px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_nm[:28]}</div>', unsafe_allow_html=True)
-                with r_cols[2]:
                     st.markdown(f'<div style="font-size:0.83em;font-weight:600;padding:7px 0">{_pfmt}</div>', unsafe_allow_html=True)
-                with r_cols[3]:
+                with r_cols[2]:
                     st.markdown(f'<div style="font-size:0.83em;font-weight:600;color:{_cc};padding:7px 0">{_ca} {abs(_chg):.2f}%</div>', unsafe_allow_html=True)
-                with r_cols[4]:
+                with r_cols[3]:
                     st.markdown(f"""
 <div style="padding:7px 0">
   <div style="display:flex;align-items:center;gap:8px">
@@ -1056,7 +1146,7 @@ if "시장 동향" in menu:
   </div>
   <div style="font-size:0.62em;opacity:0.35;margin-top:2px">평균 {_fmt_vol(_vav)}</div>
 </div>""", unsafe_allow_html=True)
-                with r_cols[5]:
+                with r_cols[4]:
                     st.markdown(f'<div style="font-size:0.8em;opacity:0.65;padding:7px 0">{_fmt_vol(_vtd)}</div>', unsafe_allow_html=True)
 
     st.markdown("<hr class='dot-divider'>", unsafe_allow_html=True)
@@ -1077,7 +1167,10 @@ if "시장 동향" in menu:
                 summary = t.get("summary","")
                 events  = t.get("key_events",[])
                 tickers = t.get("tickers",[])
-                tk_html = "".join(f'<span class="tag t-blue">{x}</span>' for x in tickers)
+                tk_html = "".join(
+                    f'<span class="tag t-blue" title="{x}">{stock_display_name(x, short=True) if x in STOCK_NAMES else x}</span>'
+                    for x in tickers
+                )
                 ev_html = "".join(f'<span class="tag t-purple">· {e}</span>' for e in events)
                 st.markdown(f"""
 <div class="theme-card">
@@ -1147,8 +1240,8 @@ elif "발굴 종목" in menu:
 <div class="card">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
     <div>
-      <span style="font-size:1.2em;font-weight:800;letter-spacing:-0.3px">{flag} {tk}</span>
-      <span style="opacity:0.45;margin-left:10px;font-size:0.84em">{name}</span>
+      <span style="font-size:1.2em;font-weight:800;letter-spacing:-0.3px">{flag} {stock_display_name(tk) if tk in STOCK_NAMES else name}</span>
+      <span style="opacity:0.35;margin-left:8px;font-size:0.72em;letter-spacing:0.3px">{tk}</span>
       &nbsp;{badge(status)}
     </div>
     <div style="text-align:right">
@@ -1186,7 +1279,7 @@ elif "발굴 종목" in menu:
             if not df_h.empty:
                 cl_h = df_h["Close"].squeeze()
                 ret  = (cl_h.iloc[-1] - cl_h.iloc[0]) / cl_h.iloc[0] * 100
-                ret_c = "#4ade80" if ret >= 0 else "#f87171"
+                ret_c = "#ef4444" if ret >= 0 else "#3b82f6"
                 ret_a = "▲" if ret >= 0 else "▼"
 
                 # MA20, MA60
@@ -1296,7 +1389,7 @@ elif "분석" in menu:
             st.error("데이터를 불러올 수 없습니다. 티커를 확인해주세요.")
         else:
             # ── 기본 정보 ──
-            nm       = info.get("shortName") or info.get("longName") or tk
+            nm       = stock_display_name(tk) if tk in STOCK_NAMES else (info.get("shortName") or info.get("longName") or tk)
             sector   = info.get("sector", "—")
             industry = info.get("industry", "—")
             biz      = info.get("longBusinessSummary", "")
@@ -1388,7 +1481,7 @@ elif "분석" in menu:
             else:         grade, gcls, gbadge = "신중 검토", "b-red",   "t-red"
 
             # ── 종목 헤더 카드 ──
-            chg_c = "#4ade80" if chg >= 0 else "#f87171"
+            chg_c = "#ef4444" if chg >= 0 else "#3b82f6"
             chg_a = "▲" if chg >= 0 else "▼"
             price_fmt = f"{pfx}{lx:,.{px_dec}f}" if lx >= 1 else f"{pfx}{lx:.4f}"
             hi_fmt = f"{pfx}{hi52:,.{px_dec}f}" if hi52 else "—"
@@ -1404,7 +1497,8 @@ elif "분석" in menu:
   <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
     <div>
       <div style="font-size:1.35em;font-weight:800;letter-spacing:-0.5px">{flag} {nm}</div>
-      <div style="opacity:0.42;font-size:0.78em;margin-top:4px">{tk} &nbsp;·&nbsp; {sector} &nbsp;·&nbsp; {industry}</div>
+      <div style="opacity:0.42;font-size:0.75em;margin-top:3px;letter-spacing:0.3px">{tk}</div>
+      <div style="opacity:0.38;font-size:0.72em;margin-top:2px">{sector} &nbsp;·&nbsp; {industry}</div>
       <div style="margin-top:10px">{star_html} &nbsp;<span class="badge {gcls}">{grade}</span> &nbsp;<span style="opacity:0.4;font-size:0.78em">IronMin 스코어 {sc}/10</span></div>
     </div>
     <div style="text-align:right">
@@ -1461,7 +1555,7 @@ elif "분석" in menu:
             fig.add_trace(go.Candlestick(
                 x=df.index, open=df["Open"], high=df["High"],
                 low=df["Low"], close=df["Close"], name="OHLC",
-                increasing_line_color="#10b981", decreasing_line_color="#ef4444"), row=1, col=1)
+                increasing_line_color="#ef4444", decreasing_line_color="#3b82f6"), row=1, col=1)
             for mc, col in {"MA20": "#f59e0b", "MA60": "#3b82f6", "MA120": "#8b5cf6"}.items():
                 if mc in df.columns and not df[mc].isna().all():
                     fig.add_trace(go.Scatter(x=df.index, y=df[mc], name=mc,
@@ -1469,8 +1563,8 @@ elif "분석" in menu:
             fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI",
                                      line=dict(color="#f97316", width=1.4)), row=2, col=1)
             fig.add_hline(y=70, line_dash="dash", line_color="#ef4444", opacity=0.4, row=2, col=1)
-            fig.add_hline(y=30, line_dash="dash", line_color="#10b981", opacity=0.4, row=2, col=1)
-            hc = ["#10b981" if v >= 0 else "#ef4444" for v in df["HIST"].fillna(0)]
+            fig.add_hline(y=30, line_dash="dash", line_color="#3b82f6", opacity=0.4, row=2, col=1)
+            hc = ["#ef4444" if v >= 0 else "#3b82f6" for v in df["HIST"].fillna(0)]
             fig.add_trace(go.Bar(x=df.index, y=df["HIST"], name="Hist", marker_color=hc, opacity=0.7), row=3, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df["MACD"], name="MACD", line=dict(color="#3b82f6", width=1.2)), row=3, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df["SIG"],  name="Signal", line=dict(color="#f97316", width=1.2, dash="dot")), row=3, col=1)
@@ -1479,8 +1573,8 @@ elif "분석" in menu:
             if "Volume" in df.columns:
                 vol_s = df["Volume"].squeeze()
                 vol_ma20 = vol_s.rolling(20).mean()
-                vol_colors = ["#10b981" if df["Close"].iloc[i] >= df["Open"].iloc[i]
-                              else "#ef4444" for i in range(len(df))]
+                vol_colors = ["#ef4444" if df["Close"].iloc[i] >= df["Open"].iloc[i]
+                              else "#3b82f6" for i in range(len(df))]
                 fig.add_trace(go.Bar(
                     x=df.index, y=vol_s, name="거래량",
                     marker_color=vol_colors, opacity=0.55
@@ -1585,9 +1679,11 @@ elif "포트폴리오" in menu:
             if st.button("추가", type="primary"):
                 if atk.strip():
                     info = get_info(atk.strip().upper())
+                    _atk_up = atk.strip().upper()
+                    _mapped_name = stock_display_name(_atk_up) if _atk_up in STOCK_NAMES else (info.get("shortName") or _atk_up)
                     st.session_state.portfolio.append({
-                        "ticker":   atk.strip().upper(),
-                        "name":     info.get("shortName") or atk.strip().upper(),
+                        "ticker":   _atk_up,
+                        "name":     _mapped_name,
                         "sector":   asec,
                         "qty":      aqty,
                         "buy_price":apx,
@@ -1652,7 +1748,7 @@ elif "포트폴리오" in menu:
             s_pp   = s_pnl / s_inv * 100 if s_inv else 0
             s_wt   = s_val / tv * 100 if tv else 0
             color  = SECTOR_PAL.get(sec, "#475569")
-            pnl_c  = "#34d399" if s_pnl >= 0 else "#f87171"
+            pnl_c  = "#ef4444" if s_pnl >= 0 else "#3b82f6"
             pnl_a  = "▲" if s_pnl >= 0 else "▼"
 
             # 섹터 헤더
@@ -1681,7 +1777,7 @@ elif "포트폴리오" in menu:
                 cur_str  = f"{_r_pfx}{r['cur_px']:,.{_r_dec}f}" if r["cur_px"] else "—"
                 buy_str  = f"{_r_pfx}{r['buy_px']:,.{_r_dec}f}"
                 pnl_str  = f"{_r_pfx}{r['pnl']:+,.{_r_dec}f}"
-                pc       = "#34d399" if r["pp"] >= 0 else "#f87171"
+                pc       = "#ef4444" if r["pp"] >= 0 else "#3b82f6"
                 pa       = "▲" if r["pp"] >= 0 else "▼"
                 inv_w    = r["val"] / tv * 100 if tv else 0
                 st.markdown(f"""
@@ -1690,10 +1786,10 @@ elif "포트폴리오" in menu:
             background:var(--secondary-background-color);
             border:1px solid rgba(128,128,128,0.1);border-radius:8px">
   <div style="display:flex;align-items:center;gap:12px;min-width:0">
-    <span style="font-size:0.88em;font-weight:700;color:#93c5fd;min-width:60px">{r['ticker']}</span>
-    <span style="font-size:0.78em;opacity:0.5;white-space:nowrap;overflow:hidden;
-                 text-overflow:ellipsis;max-width:160px">{r['name']}</span>
-    <span style="font-size:0.7em;opacity:0.3">{r['qty']}주 · 매수 {buy_str}</span>
+    <div style="min-width:0">
+      <div style="font-size:0.85em;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px">{stock_display_name(r['ticker']) if r['ticker'] in STOCK_NAMES else r['name']}</div>
+      <div style="font-size:0.68em;opacity:0.38;letter-spacing:0.3px;margin-top:1px">{r['ticker']} &nbsp;·&nbsp; {r['qty']}주 · 매수 {buy_str}</div>
+    </div>
   </div>
   <div style="display:flex;align-items:center;gap:20px;text-align:right;flex-shrink:0">
     <span style="font-size:0.82em;opacity:0.65">{cur_str}</span>
@@ -1840,10 +1936,11 @@ elif "매매 신호" in menu:
             elif sc<=-3:slbl,scls="매도 (SELL)","sig-sell"
             else:       slbl,scls="관망 (HOLD)","sig-hold"
 
-            nm=info.get("shortName") or tk
+            nm = stock_display_name(tk) if tk in STOCK_NAMES else (info.get("shortName") or tk)
             flag_s = "🇰🇷" if is_kr else "🇺🇸"
             px_fmt = f"{pfx_s}{lx:,.0f}" if is_kr else f"{pfx_s}{lx:,.2f}"
-            st.markdown(f'<div style="font-size:1.05em;font-weight:700;margin-bottom:12px">{flag_s} {nm} &nbsp;<span style="opacity:0.45;font-weight:500;font-size:0.8em">{tk}</span></div>', unsafe_allow_html=True)
+            tk_badge = f'<span style="opacity:0.38;font-weight:400;font-size:0.72em;letter-spacing:0.5px">{tk}</span>'
+            st.markdown(f'<div style="font-size:1.05em;font-weight:700;margin-bottom:4px">{flag_s} {nm}</div><div style="margin-bottom:10px">{tk_badge}</div>', unsafe_allow_html=True)
             t1,t2,t3,t4,t5=st.columns(5)
             t1.metric("현재가", px_fmt)
             t2.metric("RSI",   f"{rsi:.1f}")
@@ -1867,7 +1964,7 @@ elif "매매 신호" in menu:
                               subplot_titles=["주가 & 이동평균","RSI","MACD"])
             fig.add_trace(go.Candlestick(x=df.index,open=df["Open"],high=df["High"],
                 low=df["Low"],close=df["Close"],name="OHLC",
-                increasing_line_color="#10b981",decreasing_line_color="#ef4444"),row=1,col=1)
+                increasing_line_color="#ef4444",decreasing_line_color="#3b82f6"),row=1,col=1)
             for mc,col in {"MA20":"#f59e0b","MA60":"#3b82f6","MA120":"#8b5cf6"}.items():
                 if mc in df.columns and not df[mc].isna().all():
                     fig.add_trace(go.Scatter(x=df.index,y=df[mc],name=mc,
@@ -1875,8 +1972,8 @@ elif "매매 신호" in menu:
             fig.add_trace(go.Scatter(x=df.index,y=df["RSI"],name="RSI",
                                      line=dict(color="#f97316",width=1.4)),row=2,col=1)
             fig.add_hline(y=70,line_dash="dash",line_color="#ef4444",opacity=0.4,row=2,col=1)
-            fig.add_hline(y=30,line_dash="dash",line_color="#10b981",opacity=0.4,row=2,col=1)
-            hc=["#10b981" if v>=0 else "#ef4444" for v in df["HIST"].fillna(0)]
+            fig.add_hline(y=30,line_dash="dash",line_color="#3b82f6",opacity=0.4,row=2,col=1)
+            hc=["#ef4444" if v>=0 else "#3b82f6" for v in df["HIST"].fillna(0)]
             fig.add_trace(go.Bar(x=df.index,y=df["HIST"],name="Hist",marker_color=hc,opacity=0.7),row=3,col=1)
             fig.add_trace(go.Scatter(x=df.index,y=df["MACD"],name="MACD",line=dict(color="#3b82f6",width=1.2)),row=3,col=1)
             fig.add_trace(go.Scatter(x=df.index,y=df["SIG"],name="Signal",line=dict(color="#f97316",width=1.2,dash="dot")),row=3,col=1)
