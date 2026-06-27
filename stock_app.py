@@ -726,6 +726,124 @@ def score_turnaround(d: dict) -> int:
 
     return min(score, 10)
 
+@st.cache_data(ttl=3600*6)
+def get_reversal_data(ticker: str) -> dict:
+    """낙폭과대 추세전환 신호 분석 — 기술적 지표 기반 (6시간 캐시)"""
+    try:
+        tk_obj = yf.Ticker(ticker)
+        info   = tk_obj.info
+        hist   = yf.download(ticker, period="1y", auto_adjust=True, progress=False)
+        if hist.empty or len(hist) < 60:
+            return {}
+        cl = hist["Close"].squeeze()
+        vol = hist["Volume"].squeeze() if "Volume" in hist.columns else None
+
+        ma20  = cl.rolling(20).mean()
+        ma60  = cl.rolling(60).mean()
+        ma120 = cl.rolling(120).mean()
+
+        # RSI(14)
+        delta = cl.diff()
+        gain  = delta.clip(lower=0).rolling(14).mean()
+        loss  = (-delta.clip(upper=0)).rolling(14).mean()
+        rs    = gain / loss.replace(0, float("nan"))
+        rsi_s = 100 - 100 / (1 + rs)
+        rsi_now  = float(rsi_s.iloc[-1])
+        rsi_prev = float(rsi_s.iloc[-5]) if len(rsi_s) >= 5 else rsi_now
+
+        # MACD(12,26,9)
+        ema12 = cl.ewm(span=12, adjust=False).mean()
+        ema26 = cl.ewm(span=26, adjust=False).mean()
+        macd  = ema12 - ema26
+        sig   = macd.ewm(span=9, adjust=False).mean()
+        hist_v = macd - sig
+        macd_now  = float(hist_v.iloc[-1])
+        macd_prev = float(hist_v.iloc[-4]) if len(hist_v) >= 4 else macd_now
+        macd_cross = macd_prev < 0 and macd_now > 0   # 히스토그램 데드→골든
+
+        px_now   = float(cl.iloc[-1])
+        px_ma20  = float(ma20.iloc[-1])
+        px_ma60  = float(ma60.iloc[-1])
+        px_ma120 = float(ma120.iloc[-1]) if not ma120.iloc[-1] != ma120.iloc[-1] else None
+        hi52     = float(cl.rolling(252).max().iloc[-1])
+        lo52     = float(cl.rolling(252).min().iloc[-1])
+        pos52    = (px_now - lo52) / (hi52 - lo52) if hi52 > lo52 else 0.5
+        drawdown = (px_now - hi52) / hi52          # 고점 대비 낙폭 (음수)
+
+        # 거래량 급등 (최근 5일 평균 / 20일 평균)
+        vol_spike = False
+        if vol is not None and len(vol) >= 20:
+            v_recent = float(vol.iloc[-5:].mean())
+            v_ma20   = float(vol.rolling(20).mean().iloc[-1])
+            vol_spike = v_recent > v_ma20 * 1.5
+
+        # 최근 5일 반등률
+        rebound = (px_now - float(cl.iloc[-6])) / float(cl.iloc[-6]) if len(cl) >= 6 else 0
+
+        return {
+            "name":        info.get("shortName", ticker),
+            "sector":      info.get("sector", ""),
+            "marketCap":   info.get("marketCap"),
+            "px":          px_now,
+            "ma20":        px_ma20,
+            "ma60":        px_ma60,
+            "ma120":       px_ma120,
+            "rsi":         rsi_now,
+            "rsi_rising":  rsi_now > rsi_prev,       # RSI 상승 중
+            "macd_hist":   macd_now,
+            "macd_cross":  macd_cross,               # 히스토그램 음→양 전환
+            "pos52":       pos52,                    # 52주 범위 내 위치 (0~1)
+            "drawdown":    drawdown,                 # 고점 대비 낙폭
+            "vol_spike":   vol_spike,
+            "rebound":     rebound,
+        }
+    except:
+        return {}
+
+def score_reversal(d: dict) -> int:
+    """낙폭과대 추세전환 매수 신호 점수 (0~9)"""
+    score = 0
+    rsi      = d.get("rsi")
+    rsi_rise = d.get("rsi_rising", False)
+    macd_h   = d.get("macd_hist")
+    macd_x   = d.get("macd_cross", False)
+    pos52    = d.get("pos52", 0.5)
+    drawdown = d.get("drawdown", 0)
+    px       = d.get("px")
+    ma20     = d.get("ma20")
+    ma60     = d.get("ma60")
+    vol_spk  = d.get("vol_spike", False)
+    rebound  = d.get("rebound", 0)
+
+    # ① RSI 과매도 구간
+    if rsi is not None:
+        if rsi < 25:   score += 3
+        elif rsi < 35: score += 2
+        elif rsi < 45: score += 1
+    # RSI 반등 추세
+    if rsi_rise and rsi is not None and rsi < 50:
+        score += 1
+
+    # ② MACD 히스토그램 반전
+    if macd_x:
+        score += 2   # 음→양 골든 크로스
+    elif macd_h is not None and macd_h > 0:
+        score += 1   # 이미 양수
+
+    # ③ 52주 저점 근처 (낙폭과대)
+    if pos52 < 0.20:   score += 2
+    elif pos52 < 0.35: score += 1
+
+    # ④ 거래량 급증 동반 반등 (매집 신호)
+    if vol_spk and rebound > 0.02:
+        score += 1
+
+    # ⑤ 주가 MA20 회복 (단기 반전 확인)
+    if px and ma20 and px > ma20:
+        score += 1
+
+    return min(score, 9)
+
 @st.cache_data(ttl=3600*4)
 def get_rsi_data(tickers: tuple) -> dict:
     """섹터 전체 티커 RSI(14) 배치 계산"""
@@ -1099,7 +1217,8 @@ with st.sidebar:
 </div>
 """, unsafe_allow_html=True)
 
-    menu = st.radio("", ["📰  시장 동향", "⚡  발굴 종목", "🔍  종목 분석", "💼  포트폴리오", "📊  매매 신호"])
+    menu = st.radio("메뉴", ["📰  시장 동향", "⚡  발굴 종목", "🔍  종목 분석", "💼  포트폴리오", "📊  매매 신호"],
+                    label_visibility="collapsed")
 
     st.markdown("<hr class='dot-divider'>", unsafe_allow_html=True)
 
@@ -1853,7 +1972,7 @@ elif "발굴 종목" in menu:
   <div style="font-size:0.75em;opacity:0.42">IronMin 기준(저평가 · 성장성 · 기술 해자)으로 스크리닝한 관심 종목</div>
 </div>""", unsafe_allow_html=True)
 
-    # 공통 유니버스
+    # AI/기술 스크리너용 유니버스
     _SCR_UNIVERSE = list({
         tk for cat in [
             {"tickers":["NVDA","TSM","AVGO","AMD","ARM","QCOM","MU","INTC"]},
@@ -1874,6 +1993,43 @@ elif "발굴 종목" in menu:
         if ".KS" not in tk and ".KQ" not in tk
     })
 
+    # 낙폭과대 반등 스크리너용 유니버스 (미국 빅테크·우량주 + 한국 대형주)
+    _REV_UNIVERSE = list({
+        # 미국 빅테크 & 우량주
+        "AAPL","MSFT","GOOGL","META","AMZN","TSLA","NVDA","AVGO","ORCL",
+        "JPM","BAC","GS","MS","BLK",
+        "JNJ","LLY","ABBV","PFE","MRK","UNH",
+        "PG","KO","PEP","WMT","COST","HD","MCD","NKE",
+        "XOM","CVX","COP",
+        "V","MA","PYPL",
+        "NFLX","DIS","CMCSA",
+        "BA","CAT","GE","HON","MMM",
+        "INTC","MU","TXN","QCOM","AMD",
+        "RTX","LMT","NOC",
+        "BRK-B","AMT","EQIX",
+        # 한국 대형주 (KOSPI/KOSDAQ)
+        "005930.KS",  # 삼성전자
+        "000660.KS",  # SK하이닉스
+        "035420.KS",  # NAVER
+        "035720.KS",  # 카카오
+        "005380.KS",  # 현대차
+        "000270.KS",  # 기아
+        "051910.KS",  # LG화학
+        "006400.KS",  # 삼성SDI
+        "068270.KS",  # 셀트리온
+        "207940.KS",  # 삼성바이오로직스
+        "096770.KS",  # SK이노베이션
+        "003550.KS",  # LG
+        "017670.KS",  # SK텔레콤
+        "030200.KS",  # KT
+        "066570.KS",  # LG전자
+        "034730.KS",  # SK
+        "012330.KS",  # 현대모비스
+        "028260.KS",  # 삼성물산
+        "086790.KS",  # 하나금융지주
+        "105560.KS",  # KB금융
+    })
+
     # ── 원클릭 스크리닝 ──
     _disc_existing = {s.get("ticker") for s in load_stocks()}
     _today_str = datetime.today().strftime("%Y-%m-%d")
@@ -1886,7 +2042,8 @@ elif "발굴 종목" in menu:
         if _last_run:
             _n_moat = len(st.session_state.get("scr_moat_results", []))
             _n_tr   = len(st.session_state.get("scr_tr_results", []))
-            st.markdown(f'<div style="font-size:0.78em;opacity:0.5;padding-top:10px">마지막 실행: {_last_run} &nbsp;·&nbsp; AI해자 {_n_moat}개 · 흑자전환 {_n_tr}개 발견</div>', unsafe_allow_html=True)
+            _n_rev  = len(st.session_state.get("scr_rev_results", []))
+            st.markdown(f'<div style="font-size:0.78em;opacity:0.5;padding-top:10px">마지막 실행: {_last_run} &nbsp;·&nbsp; AI해자 {_n_moat}개 · 흑자전환 {_n_tr}개 · 반등신호 {_n_rev}개</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div style="font-size:0.78em;opacity:0.4;padding-top:10px">버튼을 눌러 오늘 유망 종목을 스크리닝합니다 (약 1~2분 소요)</div>', unsafe_allow_html=True)
 
@@ -1934,18 +2091,45 @@ elif "발굴 종목" in menu:
                 "score":_sc, "marketCap":_td.get("marketCap"),
             })
         _prog.empty()
+        # 낙폭과대 반등 스크리닝
+        _rev_results = []
+        for _i, _tk in enumerate(_REV_UNIVERSE):
+            _prog.progress(0.5 + (_i+1)/len(_REV_UNIVERSE)/2, text=f"[2/2] 기술적 신호 분석 중: {_tk}")
+            _rd = get_reversal_data(_tk)
+            if not _rd: continue
+            _rsi = _rd.get("rsi")
+            _pos = _rd.get("pos52", 1.0)
+            _dd  = _rd.get("drawdown", 0)
+            # 필터: RSI < 48 AND 52주 하단 40% AND 고점 대비 10% 이상 하락
+            if _rsi is None or _rsi >= 48: continue
+            if _pos > 0.40: continue
+            if _dd > -0.10: continue
+            _sc = score_reversal(_rd)
+            if _sc < 4: continue
+            _rev_results.append({
+                "ticker": _tk, "name": _rd.get("name", _tk), "type": "반등",
+                "rsi": _rsi, "rsi_rising": _rd.get("rsi_rising"),
+                "macd_cross": _rd.get("macd_cross"), "macd_hist": _rd.get("macd_hist"),
+                "pos52": _pos, "drawdown": _dd,
+                "vol_spike": _rd.get("vol_spike"), "rebound": _rd.get("rebound", 0),
+                "sector": _rd.get("sector", ""), "marketCap": _rd.get("marketCap"),
+                "score": _sc,
+            })
         _moat_results.sort(key=lambda x: x["score"], reverse=True)
         _tr_results.sort(key=lambda x: x["score"], reverse=True)
+        _rev_results.sort(key=lambda x: x["score"], reverse=True)
         st.session_state["scr_moat_results"] = _moat_results
         st.session_state["scr_tr_results"]   = _tr_results
+        st.session_state["scr_rev_results"]  = _rev_results
         st.session_state["scr_last_run"]      = _today_str
         st.rerun()
 
     # 결과 표시 (session_state 유지)
     _moat_res = st.session_state.get("scr_moat_results", [])
     _tr_res   = st.session_state.get("scr_tr_results", [])
+    _rev_res  = st.session_state.get("scr_rev_results", [])
 
-    if _moat_res or _tr_res:
+    if _moat_res or _tr_res or _rev_res:
         st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
         def _render_scr_table(rows, score_max, label_color):
@@ -2050,6 +2234,60 @@ elif "발굴 종목" in menu:
                             save_stocks(_all)
                             st.success(f"{_tk2} 관심목록에 추가!")
                             st.rerun()
+
+    if _rev_res:
+        st.markdown(f'<div style="font-size:0.8em;font-weight:700;margin:16px 0 6px">📉 낙폭과대 반등 신호 — {len(_rev_res)}개 (한국·미국 우량주)</div>', unsafe_allow_html=True)
+        _disc_now3 = {s.get("ticker") for s in load_stocks()}
+        _hrev = st.columns([2,3,1,2,2,2,1,2])
+        for _hc, _hl in zip(_hrev, ["종목","이름","시장","RSI","MACD전환","낙폭","점수","추가"]):
+            _hc.markdown(f'<div style="font-size:0.63em;opacity:0.35;font-weight:700;letter-spacing:1px;padding-bottom:4px;border-bottom:1px solid rgba(128,128,128,0.1)">{_hl}</div>', unsafe_allow_html=True)
+        for _r in _rev_res:
+            _tk2     = _r["ticker"]
+            _already = _tk2 in _disc_now3
+            _is_kr   = ".KS" in _tk2 or ".KQ" in _tk2
+            _flag    = "🇰🇷" if _is_kr else "🇺🇸"
+            _rc      = st.columns([2,3,1,2,2,2,1,2])
+            _lnk     = stock_link_url(_tk2)
+            _mc      = f'${_r["marketCap"]/1e9:.0f}B' if (_r.get("marketCap") and not _is_kr) else (f'₩{_r["marketCap"]/1e12:.1f}조' if _r.get("marketCap") else "—")
+            _rsi_c   = "#ef4444" if _r["rsi"] < 30 else "#fbbf24" if _r["rsi"] < 40 else "#60a5fa"
+            _rsi_arr = " ↑" if _r.get("rsi_rising") else ""
+            _macd_s  = '<span style="color:#4ade80;font-weight:700">⚡골든</span>' if _r.get("macd_cross") else ('<span style="color:#fbbf24">양전환</span>' if (_r.get("macd_hist") or 0) > 0 else '<span style="opacity:0.4">—</span>')
+            _dd_str  = f'{_r["drawdown"]*100:.1f}%'
+            _pos_c   = "#ef4444" if _r["pos52"] < 0.20 else "#fbbf24"
+            _stars   = "★" * _r["score"]
+            with _rc[0]: st.markdown(f'<div style="padding:5px 0;font-size:0.82em;font-weight:700"><a href="{_lnk}" target="_blank" style="color:inherit;text-decoration:none">{_tk2.replace(".KS","").replace(".KQ","")}</a> <span style="opacity:0.28;font-size:0.72em">{_mc}</span></div>', unsafe_allow_html=True)
+            with _rc[1]: st.markdown(f'<div style="padding:5px 0;font-size:0.78em;opacity:0.65">{_r["name"][:18]}</div>', unsafe_allow_html=True)
+            with _rc[2]: st.markdown(f'<div style="padding:5px 0;font-size:0.85em">{_flag}</div>', unsafe_allow_html=True)
+            with _rc[3]: st.markdown(f'<div style="padding:5px 0;font-size:0.82em;font-weight:700;color:{_rsi_c}">{_r["rsi"]:.1f}{_rsi_arr}</div>', unsafe_allow_html=True)
+            with _rc[4]: st.markdown(f'<div style="padding:5px 0;font-size:0.82em">{_macd_s}</div>', unsafe_allow_html=True)
+            with _rc[5]: st.markdown(f'<div style="padding:5px 0;font-size:0.82em;font-weight:600;color:{_pos_c}">{_dd_str}</div>', unsafe_allow_html=True)
+            with _rc[6]: st.markdown(f'<div style="padding:5px 0;font-size:0.75em;color:#a78bfa">{_stars}</div>', unsafe_allow_html=True)
+            with _rc[7]:
+                if _already:
+                    st.markdown('<div style="padding:5px 0;font-size:0.72em;opacity:0.35">✓ 목록에 있음</div>', unsafe_allow_html=True)
+                else:
+                    if st.button("＋ 추가", key=f"add_{_tk2}_rev"):
+                        _info2 = get_info(_tk2)
+                        _nm2   = (_info2.get("shortName") or _tk2) if _info2 else _tk2
+                        _mkt2  = "KR" if _is_kr else "US"
+                        _reason = f"낙폭과대 반등 신호 — RSI {_r['rsi']:.1f}, 고점 대비 {_r['drawdown']*100:.1f}% 하락"
+                        if _r.get("macd_cross"): _reason += ", MACD 골든크로스"
+                        _all = load_stocks()
+                        _all.append({
+                            "ticker":_tk2, "name":_nm2, "market":_mkt2,
+                            "sector":"🗂️ 기타",
+                            "added_date":_today_str, "current_status":"관찰 중",
+                            "discovery_reason":_reason,
+                            "catalysts":["낙폭과대 기술적 반등","RSI 과매도 구간","우량주 저점 매수"],
+                            "risks":["추가 하락 가능성","매크로 리스크"],
+                            "buy_triggers":["RSI 35 하회 후 반등","MACD 골든크로스 확인"],
+                            "target_price":None, "stop_loss":None,
+                            "ironmin_score":min(_r["score"]//2 + 1, 5),
+                            "notes":f"기술적 반등 스크리너 자동 발굴 ({_today_str}). 펀더멘털 추가 확인 권장.",
+                        })
+                        save_stocks(_all)
+                        st.success(f"{_tk2} 관심목록에 추가!")
+                        st.rerun()
 
     elif not st.session_state.get("scr_last_run"):
         st.markdown('<div style="font-size:0.82em;opacity:0.4;margin:20px 0;text-align:center">스크리닝 결과가 여기에 표시됩니다</div>', unsafe_allow_html=True)
