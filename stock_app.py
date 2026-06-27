@@ -633,73 +633,98 @@ def score_ai_moat(d: dict) -> int:
 
 @st.cache_data(ttl=3600*24)
 def get_turnaround_data(ticker: str) -> dict:
-    """흑자전환 후보 분석용 분기 재무 데이터 (24시간 캐시)"""
+    """흑자전환 예상 기업 분석 — 분기 추세 + 포워드 추정치 포함 (24시간 캐시)"""
     try:
         tk_obj = yf.Ticker(ticker)
         info   = tk_obj.info
         qf     = tk_obj.quarterly_financials  # 행=항목, 열=분기
 
+        trailing_eps = info.get("trailingEps")
+        forward_eps  = info.get("forwardEps")
+        # 포워드 EPS가 양수이고 트레일링이 음수 → 흑자전환 임박
+        eps_turning = (forward_eps is not None and forward_eps > 0
+                       and trailing_eps is not None and trailing_eps < 0)
+        # 포워드 EPS 개선율 (둘 다 존재할 때)
+        eps_improvement = None
+        if forward_eps is not None and trailing_eps is not None and trailing_eps != 0:
+            eps_improvement = (forward_eps - trailing_eps) / abs(trailing_eps)
+
         result = {
-            "name":           info.get("shortName", ticker),
-            "grossMargin":    info.get("grossMargins"),
-            "revenueGrowth":  info.get("revenueGrowth"),
-            "operatingMargin":info.get("operatingMargins"),
-            "marketCap":      info.get("marketCap"),
-            "totalCash":      info.get("totalCash"),
-            "totalDebt":      info.get("totalDebt"),
-            "op_trend":       None,   # 분기 영업이익 추세
-            "op_quarters":    [],     # 최근 4분기 영업이익
+            "name":            info.get("shortName", ticker),
+            "grossMargin":     info.get("grossMargins"),
+            "revenueGrowth":   info.get("revenueGrowth"),
+            "operatingMargin": info.get("operatingMargins"),
+            "marketCap":       info.get("marketCap"),
+            "totalCash":       info.get("totalCash"),
+            "totalDebt":       info.get("totalDebt"),
+            "trailingEps":     trailing_eps,
+            "forwardEps":      forward_eps,
+            "eps_turning":     eps_turning,       # 트레일링↓ → 포워드↑
+            "eps_improvement": eps_improvement,   # 개선율
+            "op_trend":        None,              # 분기 영업이익 추세 (0~3)
+            "op_quarters":     [],                # 최근 4분기 영업이익
         }
 
         if qf is not None and not qf.empty:
-            # Operating Income 행 찾기
             op_row = None
             for label in ["Operating Income", "Operating Income Or Loss", "EBIT"]:
                 if label in qf.index:
                     op_row = qf.loc[label]
                     break
             if op_row is not None:
-                op_vals = op_row.dropna().tolist()[:4]   # 최신 4분기 (내림차순)
+                op_vals = op_row.dropna().tolist()[:4]
                 result["op_quarters"] = op_vals
                 if len(op_vals) >= 3:
-                    # 개선 추세: 최신값 > 이전값 (손실 축소 = 숫자가 커짐)
                     improving = sum(1 for i in range(len(op_vals)-1) if op_vals[i] > op_vals[i+1])
-                    result["op_trend"] = improving  # 0~3 (3=매 분기 개선)
+                    result["op_trend"] = improving  # 3 = 매 분기 개선
+
         return result
     except:
         return {}
 
 def score_turnaround(d: dict) -> int:
-    """흑자전환 가능성 점수 (0~9)"""
+    """흑자전환 예상 점수 (0~10) — 분기 추세 + 포워드 EPS 전환 신호 반영"""
     score = 0
-    gm  = d.get("grossMargin")
-    rg  = d.get("revenueGrowth")
-    om  = d.get("operatingMargin")
-    tr  = d.get("op_trend")
-    cash = d.get("totalCash")  or 0
-    debt = d.get("totalDebt")  or 0
+    gm   = d.get("grossMargin")
+    rg   = d.get("revenueGrowth")
+    om   = d.get("operatingMargin")
+    tr   = d.get("op_trend")
+    cash = d.get("totalCash") or 0
+    debt = d.get("totalDebt") or 0
+    eps_turning    = d.get("eps_turning", False)
+    eps_imp        = d.get("eps_improvement")
 
-    # 매출총이익률 — 단위경제성 확인
+    # ① 단위경제성 — 매출총이익률
     if gm is not None:
         if gm >= 0.60: score += 3
         elif gm >= 0.40: score += 2
         elif gm >= 0.25: score += 1
 
-    # 매출성장률 — 고정비 희석 속도
+    # ② 매출 성장 속도 (고정비 레버리지)
     if rg is not None:
-        if rg >= 0.40: score += 3
-        elif rg >= 0.25: score += 2
-        elif rg >= 0.15: score += 1
+        if rg >= 0.40: score += 2
+        elif rg >= 0.25: score += 1
 
-    # 분기별 적자 축소 추세
+    # ③ 분기별 영업이익 개선 추세
     if tr is not None:
         if tr >= 3: score += 2
         elif tr >= 2: score += 1
 
-    # 현금 여력 (부채 대비)
+    # ④ 포워드 EPS 전환 신호 (핵심 — 애널리스트 컨센서스)
+    if eps_turning:
+        score += 2   # 트레일링 적자 → 포워드 흑자 예상
+    elif eps_imp is not None and eps_imp > 0.50:
+        score += 1   # EPS 50%+ 개선 예상
+
+    # ⑤ 현재 적자 폭이 작을수록 가산 (손익분기 근접)
+    if om is not None:
+        if -0.05 < om < 0:   score += 1   # 5% 미만 적자 — 매우 임박
+        elif -0.15 < om < 0: score += 0   # 중간
+
+    # ⑥ 현금 여력
     if cash > debt * 1.5: score += 1
 
-    return score
+    return min(score, 10)
 
 @st.cache_data(ttl=3600*4)
 def get_rsi_data(tickers: tuple) -> dict:
@@ -1884,7 +1909,7 @@ elif "발굴 종목" in menu:
                 "grossMargin":_gm, "revenueGrowth":_rg, "operatingMargin":_om,
                 "score":_sc, "marketCap":_fd.get("marketCap"),
             })
-        # 흑자전환 스크리닝
+        # 흑자전환 예상 스크리닝
         _tr_results = []
         for _i, _tk in enumerate(_SCR_UNIVERSE):
             _prog.progress(0.5 + (_i+1)/len(_SCR_UNIVERSE)/2, text=f"[2/2] 흑자전환 분석 중: {_tk}")
@@ -1892,15 +1917,21 @@ elif "발굴 종목" in menu:
             if not _td: continue
             _gm = _td.get("grossMargin"); _rg = _td.get("revenueGrowth"); _om = _td.get("operatingMargin")
             if _gm is None or _rg is None: continue
-            if _gm*100 < 35 or _rg*100 < 20: continue
-            if (_om or 0) >= 0: continue
+            if _gm*100 < 35 or _rg*100 < 15: continue
+            # 핵심 필터: 현재 적자이거나 5% 미만 흑자 (아직 본격 수익화 전)
+            if (_om or 0) >= 0.05: continue
+            # 최소한 분기 개선 추세 또는 포워드 EPS 전환 신호 중 하나는 있어야 함
+            _eps_turn = _td.get("eps_turning", False)
+            _op_tr    = _td.get("op_trend") or 0
+            if not _eps_turn and _op_tr < 1: continue
             _sc = score_turnaround(_td)
             if _sc < 4: continue
             _tr_results.append({
                 "ticker":_tk, "name":_td.get("name",_tk), "type":"흑자전환",
                 "grossMargin":_gm, "revenueGrowth":_rg, "operatingMargin":_om,
-                "op_trend":_td.get("op_trend"), "score":_sc,
-                "marketCap":_td.get("marketCap"),
+                "op_trend":_op_tr, "eps_turning":_eps_turn,
+                "forwardEps":_td.get("forwardEps"), "trailingEps":_td.get("trailingEps"),
+                "score":_sc, "marketCap":_td.get("marketCap"),
             })
         _prog.empty()
         _moat_results.sort(key=lambda x: x["score"], reverse=True)
@@ -1970,8 +2001,55 @@ elif "발굴 종목" in menu:
             _render_scr_table(_moat_res, 8, "#34d399")
 
         if _tr_res:
-            st.markdown(f'<div style="font-size:0.8em;font-weight:700;margin:16px 0 6px">🚀 흑자전환 후보 — {len(_tr_res)}개</div>', unsafe_allow_html=True)
-            _render_scr_table(_tr_res, 9, "#f87171")
+            st.markdown(f'<div style="font-size:0.8em;font-weight:700;margin:16px 0 6px">🚀 흑자전환 예상 — {len(_tr_res)}개</div>', unsafe_allow_html=True)
+            # 흑자전환용 확장 테이블 (포워드 EPS 전환 신호 포함)
+            _disc_now2 = {s.get("ticker") for s in load_stocks()}
+            _htr = st.columns([2,3,2,2,2,2,1,2])
+            for _hc, _hl in zip(_htr, ["종목","이름","총이익률","매출성장","분기추세","EPS전환","점수","추가"]):
+                _hc.markdown(f'<div style="font-size:0.63em;opacity:0.35;font-weight:700;letter-spacing:1px;padding-bottom:4px;border-bottom:1px solid rgba(128,128,128,0.1)">{_hl}</div>', unsafe_allow_html=True)
+            for _r in _tr_res:
+                _tk2     = _r["ticker"]
+                _already = _tk2 in _disc_now2
+                _rc      = st.columns([2,3,2,2,2,2,1,2])
+                _lnk     = stock_link_url(_tk2)
+                _mc      = f'${_r["marketCap"]/1e9:.0f}B' if _r.get("marketCap") else "—"
+                _rg_c    = "#ef4444" if _r["revenueGrowth"]>=0.30 else "#fbbf24" if _r["revenueGrowth"]>=0.15 else "inherit"
+                _tr_icon = "📈📈📈" if _r["op_trend"]>=3 else "📈📈" if _r["op_trend"]>=2 else "📈" if _r["op_trend"]==1 else "—"
+                _feps    = _r.get("forwardEps"); _teps = _r.get("trailingEps")
+                _eps_str = f'<span style="color:#4ade80;font-weight:700">⚡ 전환</span>' if _r.get("eps_turning") else (f'<span style="opacity:0.5;font-size:0.85em">{_feps:+.2f}</span>' if _feps else "—")
+                _stars   = "★" * min(_r["score"], 10)
+                with _rc[0]: st.markdown(f'<div style="padding:5px 0;font-size:0.82em;font-weight:700"><a href="{_lnk}" target="_blank" style="color:inherit;text-decoration:none">{_tk2}</a> <span style="opacity:0.28;font-size:0.72em">{_mc}</span></div>', unsafe_allow_html=True)
+                with _rc[1]: st.markdown(f'<div style="padding:5px 0;font-size:0.78em;opacity:0.65">{_r["name"][:20]}</div>', unsafe_allow_html=True)
+                with _rc[2]: st.markdown(f'<div style="padding:5px 0;font-size:0.82em;font-weight:600;color:#34d399">{_r["grossMargin"]*100:.1f}%</div>', unsafe_allow_html=True)
+                with _rc[3]: st.markdown(f'<div style="padding:5px 0;font-size:0.82em;font-weight:600;color:{_rg_c}">{_r["revenueGrowth"]*100:+.1f}%</div>', unsafe_allow_html=True)
+                with _rc[4]: st.markdown(f'<div style="padding:5px 0;font-size:0.85em">{_tr_icon}</div>', unsafe_allow_html=True)
+                with _rc[5]: st.markdown(f'<div style="padding:5px 0;font-size:0.82em">{_eps_str}</div>', unsafe_allow_html=True)
+                with _rc[6]: st.markdown(f'<div style="padding:5px 0;font-size:0.75em;color:#fbbf24">{_stars}</div>', unsafe_allow_html=True)
+                with _rc[7]:
+                    if _already:
+                        st.markdown('<div style="padding:5px 0;font-size:0.72em;opacity:0.35">✓ 목록에 있음</div>', unsafe_allow_html=True)
+                    else:
+                        if st.button("＋ 추가", key=f"add_{_tk2}_tr2"):
+                            _info2  = get_info(_tk2)
+                            _nm2    = (_info2.get("shortName") or _tk2) if _info2 else _tk2
+                            _reason = f"흑자전환 예상 — 매출총이익률 {_r['grossMargin']*100:.1f}%, 매출성장 {_r['revenueGrowth']*100:+.1f}%"
+                            if _r.get("eps_turning"): _reason += f", 포워드EPS 흑자전환 예상(+{_feps:.2f})"
+                            _all = load_stocks()
+                            _all.append({
+                                "ticker":_tk2, "name":_nm2, "market":"US",
+                                "sector":"🌐 기술_전반",
+                                "added_date":_today_str, "current_status":"관찰 중",
+                                "discovery_reason":_reason,
+                                "catalysts":["흑자전환 임박","매출 고성장","분기 적자 축소"],
+                                "risks":["흑자전환 지연 리스크","희석 우려"],
+                                "buy_triggers":["첫 흑자 분기 발표","어닝서프라이즈"],
+                                "target_price":None,"stop_loss":None,
+                                "ironmin_score":min(_r["score"]//2, 5),
+                                "notes":f"흑자전환 예상 스크리너 자동 발굴 ({_today_str}).",
+                            })
+                            save_stocks(_all)
+                            st.success(f"{_tk2} 관심목록에 추가!")
+                            st.rerun()
 
     elif not st.session_state.get("scr_last_run"):
         st.markdown('<div style="font-size:0.82em;opacity:0.4;margin:20px 0;text-align:center">스크리닝 결과가 여기에 표시됩니다</div>', unsafe_allow_html=True)
