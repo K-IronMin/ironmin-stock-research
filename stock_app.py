@@ -134,6 +134,18 @@ hr { opacity: 0.12 !important; margin: 12px 0 !important; }
   border-color: #3b82f6 !important;
   box-shadow: 0 0 0 2px rgba(59,130,246,0.12) !important;
 }
+/* 라벨 겹침 방지 — 레이블을 input 위에 고정 */
+.stTextInput > label, .stTextInput > div > label,
+.stNumberInput > label, .stSelectbox > label,
+.stDateInput > label {
+  position: static !important;
+  transform: none !important;
+  font-size: 0.78em !important;
+  opacity: 0.7 !important;
+  margin-bottom: 3px !important;
+  display: block !important;
+}
+.stTextInput > div { margin-top: 0 !important; }
 .stSelectbox > div > div {
   background: var(--secondary-background-color) !important;
   border: 1px solid rgba(128,128,128,0.2) !important;
@@ -391,7 +403,7 @@ STOCK_NAMES = {
     "PLTR": ("팔란티어", "Palantir"),
     "AI":   ("씨쓰리에이아이", "C3.ai"),
     "PATH": ("유아이패스", "UiPath"),
-    # ── AI 광학 ──
+    # ── AI 광통신 ──
     "GLW":  ("코닝", "Corning"),
     "CIEN": ("시에나", "Ciena"),
     "GFS":  ("글로벌파운드리스", "GlobalFoundries"),
@@ -584,6 +596,111 @@ def get_yearly_returns(tickers: tuple) -> dict:
         pass
     return result
 
+@st.cache_data(ttl=3600*24)
+def get_fundamental_data(ticker: str) -> dict:
+    """종목 핵심 재무 지표 조회 (24시간 캐시)"""
+    try:
+        info = yf.Ticker(ticker).info
+        return {
+            "name":           info.get("shortName", ticker),
+            "grossMargin":    info.get("grossMargins"),
+            "revenueGrowth":  info.get("revenueGrowth"),
+            "operatingMargin":info.get("operatingMargins"),
+            "marketCap":      info.get("marketCap"),
+            "sector":         info.get("sector", ""),
+        }
+    except:
+        return {}
+
+def score_ai_moat(d: dict) -> int:
+    """재무 지표 기반 AI 해자 점수 (0~8)"""
+    score = 0
+    gm = d.get("grossMargin")
+    rg = d.get("revenueGrowth")
+    om = d.get("operatingMargin")
+    if gm is not None:
+        if gm >= 0.65:  score += 3
+        elif gm >= 0.50: score += 2
+        elif gm >= 0.35: score += 1
+    if rg is not None:
+        if rg >= 0.30:  score += 3
+        elif rg >= 0.20: score += 2
+        elif rg >= 0.10: score += 1
+    if om is not None:
+        if om >= 0.20:  score += 2
+        elif om >= 0.10: score += 1
+    return score
+
+@st.cache_data(ttl=3600*24)
+def get_turnaround_data(ticker: str) -> dict:
+    """흑자전환 후보 분석용 분기 재무 데이터 (24시간 캐시)"""
+    try:
+        tk_obj = yf.Ticker(ticker)
+        info   = tk_obj.info
+        qf     = tk_obj.quarterly_financials  # 행=항목, 열=분기
+
+        result = {
+            "name":           info.get("shortName", ticker),
+            "grossMargin":    info.get("grossMargins"),
+            "revenueGrowth":  info.get("revenueGrowth"),
+            "operatingMargin":info.get("operatingMargins"),
+            "marketCap":      info.get("marketCap"),
+            "totalCash":      info.get("totalCash"),
+            "totalDebt":      info.get("totalDebt"),
+            "op_trend":       None,   # 분기 영업이익 추세
+            "op_quarters":    [],     # 최근 4분기 영업이익
+        }
+
+        if qf is not None and not qf.empty:
+            # Operating Income 행 찾기
+            op_row = None
+            for label in ["Operating Income", "Operating Income Or Loss", "EBIT"]:
+                if label in qf.index:
+                    op_row = qf.loc[label]
+                    break
+            if op_row is not None:
+                op_vals = op_row.dropna().tolist()[:4]   # 최신 4분기 (내림차순)
+                result["op_quarters"] = op_vals
+                if len(op_vals) >= 3:
+                    # 개선 추세: 최신값 > 이전값 (손실 축소 = 숫자가 커짐)
+                    improving = sum(1 for i in range(len(op_vals)-1) if op_vals[i] > op_vals[i+1])
+                    result["op_trend"] = improving  # 0~3 (3=매 분기 개선)
+        return result
+    except:
+        return {}
+
+def score_turnaround(d: dict) -> int:
+    """흑자전환 가능성 점수 (0~9)"""
+    score = 0
+    gm  = d.get("grossMargin")
+    rg  = d.get("revenueGrowth")
+    om  = d.get("operatingMargin")
+    tr  = d.get("op_trend")
+    cash = d.get("totalCash")  or 0
+    debt = d.get("totalDebt")  or 0
+
+    # 매출총이익률 — 단위경제성 확인
+    if gm is not None:
+        if gm >= 0.60: score += 3
+        elif gm >= 0.40: score += 2
+        elif gm >= 0.25: score += 1
+
+    # 매출성장률 — 고정비 희석 속도
+    if rg is not None:
+        if rg >= 0.40: score += 3
+        elif rg >= 0.25: score += 2
+        elif rg >= 0.15: score += 1
+
+    # 분기별 적자 축소 추세
+    if tr is not None:
+        if tr >= 3: score += 2
+        elif tr >= 2: score += 1
+
+    # 현금 여력 (부채 대비)
+    if cash > debt * 1.5: score += 1
+
+    return score
+
 @st.cache_data(ttl=3600*4)
 def get_rsi_data(tickers: tuple) -> dict:
     """섹터 전체 티커 RSI(14) 배치 계산"""
@@ -684,6 +801,140 @@ def get_dart_list(days=14, page_count=15):
         if data.get("status") != "000": return []
         return data.get("list", [])
     except: return []
+
+@st.cache_data(ttl=3600*24)
+def get_dart_corp_code(stock_code: str) -> str:
+    """DART corp_code 조회 (stock_code: '005930' 형식)"""
+    api_key = _secret("dart", "api_key")
+    if not api_key or "여기에" in api_key:
+        return ""
+    try:
+        import urllib.request as _ur4
+        url = (f"https://opendart.fss.or.kr/api/company.json"
+               f"?crtfc_key={api_key}&stock_code={stock_code}")
+        with _ur4.urlopen(url, timeout=8) as r:
+            data = json.loads(r.read())
+        if data.get("status") == "000":
+            return data.get("corp_code", "")
+    except:
+        pass
+    return ""
+
+@st.cache_data(ttl=3600*24)
+def get_dart_kr_financials(corp_code: str, bsns_year: int = 0) -> dict:
+    """DART 연간 재무제표 — 매출·영업이익·순이익·자본·부채 (연결우선, 개별 fallback)"""
+    if not corp_code:
+        return {}
+    api_key = _secret("dart", "api_key")
+    if not api_key or "여기에" in api_key:
+        return {}
+    if bsns_year == 0:
+        bsns_year = datetime.today().year - 1
+
+    import urllib.request as _ur5
+
+    def _fetch(fs_div):
+        url = (f"https://opendart.fss.or.kr/api/fnlttSinglAcnt.json"
+               f"?crtfc_key={api_key}&corp_code={corp_code}"
+               f"&bsns_year={bsns_year}&reprt_code=11011&fs_div={fs_div}")
+        try:
+            with _ur5.urlopen(url, timeout=10) as r:
+                return json.loads(r.read())
+        except:
+            return {}
+
+    def _extract_amount(items, keywords):
+        for it in items:
+            nm = it.get("account_nm", "")
+            for kw in keywords:
+                if nm == kw or (kw in nm and nm.replace(kw, "").strip() in ("", "(연결)", "(별도)")):
+                    try:
+                        raw = it.get("thstrm_amount", "").replace(",", "").replace(" ", "")
+                        if raw and raw not in ("-", ""):
+                            return int(raw)
+                    except:
+                        pass
+        return None
+
+    def _extract_prev(items, keywords):
+        for it in items:
+            nm = it.get("account_nm", "")
+            for kw in keywords:
+                if nm == kw or (kw in nm and nm.replace(kw, "").strip() in ("", "(연결)", "(별도)")):
+                    try:
+                        raw = it.get("frmtrm_amount", "").replace(",", "").replace(" ", "")
+                        if raw and raw not in ("-", ""):
+                            return int(raw)
+                    except:
+                        pass
+        return None
+
+    for fs_div in ("CFS", "OFS"):
+        data = _fetch(fs_div)
+        if data.get("status") == "000" and data.get("list"):
+            items = data["list"]
+            rev      = _extract_amount(items, ["매출액", "수익(매출액)"])
+            op_inc   = _extract_amount(items, ["영업이익", "영업이익(손실)"])
+            net_inc  = _extract_amount(items, ["당기순이익", "당기순이익(손실)"])
+            equity   = _extract_amount(items, ["자본총계"])
+            debt_tot = _extract_amount(items, ["부채총계"])
+            prev_rev = _extract_prev(items, ["매출액", "수익(매출액)"])
+
+            result = {
+                "매출액":     rev,
+                "영업이익":   op_inc,
+                "당기순이익": net_inc,
+                "자본총계":   equity,
+                "부채총계":   debt_tot,
+                "bsns_year":  bsns_year,
+                "fs_div":     fs_div,
+            }
+            # 파생 비율
+            if rev and rev != 0:
+                result["opm"] = op_inc / rev if op_inc is not None else None
+                result["npm"] = net_inc / rev if net_inc is not None else None
+                if prev_rev and prev_rev != 0:
+                    result["rev_g"] = (rev - prev_rev) / abs(prev_rev)
+            if equity and equity != 0:
+                result["roe"] = net_inc / equity if net_inc is not None else None
+                result["dte"] = (debt_tot / equity * 100) if debt_tot is not None else None
+            return result
+    return {}
+
+@st.cache_data(ttl=3600*3)
+def get_news_kr(ticker: str, max_items: int = 5) -> list:
+    """종목 최신 뉴스 한글 번역 (deep-translator 사용, fallback: 영문 원본)"""
+    try:
+        news = yf.Ticker(ticker).news
+        if not news:
+            return []
+        try:
+            from deep_translator import GoogleTranslator
+            translator = GoogleTranslator(source="auto", target="ko")
+        except Exception:
+            translator = None
+
+        results = []
+        for item in news[:max_items]:
+            content = item.get("content") or {}
+            title   = content.get("title") or item.get("title", "")
+            link    = content.get("canonicalUrl", {}).get("url", "") or \
+                      item.get("link", "") or item.get("url", "")
+            pub_ts  = item.get("providerPublishTime") or \
+                      (content.get("pubDate", "") or "")[:10]
+            if not title:
+                continue
+            if translator:
+                try:
+                    title_kr = translator.translate(title)
+                except Exception:
+                    title_kr = title
+            else:
+                title_kr = title
+            results.append({"title": title_kr, "title_en": title, "link": link, "date": pub_ts})
+        return results
+    except Exception:
+        return []
 
 @st.cache_data(ttl=1800)
 def get_surge_news(ticker: str) -> str:
@@ -913,22 +1164,41 @@ if "시장 동향" in menu:
 
     @st.cache_data(ttl=1800)
     def get_cnn_fng():
+        """VIX(60%) + SPY 모멘텀(30%) + Put/Call(10%) 합성 공탐지수"""
         try:
-            req = _ur.Request(
-                "https://production.dataviz.cnn.io/index/fearandgreed/graphdata/",
-                headers={"User-Agent": "Mozilla/5.0"}
-            )
-            with _ur.urlopen(req, timeout=5) as r:
-                d = _json.loads(r.read())["fear_and_greed"]
-                score = round(d["score"])
-                prev  = round(d["previous_close"])
-                rating_map = {
-                    "Extreme Fear":"극공포","Fear":"공포","Neutral":"중립",
-                    "Greed":"탐욕","Extreme Greed":"극탐욕"
-                }
-                rating = rating_map.get(d.get("rating",""), d.get("rating",""))
-                return score, score-prev, rating
-        except: return None, None, None
+            # 1) VIX — 낮을수록 탐욕 (VIX 10→100점, VIX 40→0점)
+            vix_hist = yf.download("^VIX", period="5d", progress=False, auto_adjust=True)["Close"].squeeze().dropna()
+            vix_now  = float(vix_hist.iloc[-1])
+            vix_prev = float(vix_hist.iloc[-2]) if len(vix_hist) >= 2 else vix_now
+            def _vix_score(v): return max(0, min(100, (40 - v) / 30 * 100))
+            vs_now  = _vix_score(vix_now)
+            vs_prev = _vix_score(vix_prev)
+
+            # 2) SPY vs 125일 이동평균 — 위면 탐욕(65), 아래면 공포(35)
+            spy_hist = yf.download("SPY", period="7mo", progress=False, auto_adjust=True)["Close"].squeeze().dropna()
+            ma125    = float(spy_hist.rolling(125).mean().iloc[-1])
+            mom_score = 65 if float(spy_hist.iloc[-1]) > ma125 else 35
+
+            # 3) Put/Call 비율 — 낮을수록 탐욕 (0.5→80점, 1.2→20점)
+            try:
+                pc_df = yf.download("^PCALL", period="5d", progress=False, auto_adjust=True)["Close"].squeeze().dropna()
+                pc    = float(pc_df.iloc[-1]) if not pc_df.empty else 0.8
+            except:
+                pc = 0.8
+            pc_score = max(0, min(100, (1.2 - pc) / 0.7 * 60 + 20))
+
+            score      = round(vs_now  * 0.6 + mom_score * 0.3 + pc_score * 0.1)
+            prev_score = round(vs_prev * 0.6 + mom_score * 0.3 + pc_score * 0.1)
+
+            if   score >= 75: label = "극탐욕"
+            elif score >= 55: label = "탐욕"
+            elif score >= 45: label = "중립"
+            elif score >= 25: label = "공포"
+            else:             label = "극공포"
+
+            return score, score - prev_score, label
+        except:
+            return None, None, None
 
     @st.cache_data(ttl=1800)
     def get_btc_fng():
@@ -1020,7 +1290,7 @@ if "시장 동향" in menu:
     si1, si2, si3, si4 = st.columns(4)
 
     with si1:
-        st.markdown(fng_gauge_card("😨", "CNN 공탐지수 (주식)", cnn_val, cnn_chg, cnn_lbl), unsafe_allow_html=True)
+        st.markdown(fng_gauge_card("😨", "공탐지수 (VIX기반)", cnn_val, cnn_chg, cnn_lbl), unsafe_allow_html=True)
     with si2:
         vd = vix_data.get("^VIX")
         if vd:
@@ -1216,7 +1486,7 @@ if "시장 동향" in menu:
          "tickers":["MSFT","GOOGL","META","AMZN","ORCL","CRM","PLTR","AI","PATH"]},
         {"icon":"☁️","name":"클라우드",
          "tickers":["AMZN","MSFT","GOOGL","SNOW","NET","DDOG","MDB","CFLT","GTLB"]},
-        {"icon":"💡","name":"AI 광학",
+        {"icon":"💡","name":"AI 광통신",
          "tickers":["COHR","LITE","MRVL","GLW","CIEN","GFS","AAOI","POET"]},
         {"icon":"⚡","name":"전력\n인프라",
          "tickers":["NEE","CEG","VST","PWR","NVT","PRIM","015760.KS","010120.KS"]},
@@ -1558,6 +1828,156 @@ elif "발굴 종목" in menu:
   <div style="font-size:0.75em;opacity:0.42">IronMin 기준(저평가 · 성장성 · 기술 해자)으로 스크리닝한 관심 종목</div>
 </div>""", unsafe_allow_html=True)
 
+    # 공통 유니버스
+    _SCR_UNIVERSE = list({
+        tk for cat in [
+            {"tickers":["NVDA","TSM","AVGO","AMD","ARM","QCOM","MU","INTC"]},
+            {"tickers":["MSFT","GOOGL","META","AMZN","ORCL","CRM","PLTR","AI","PATH"]},
+            {"tickers":["AMZN","MSFT","GOOGL","SNOW","NET","DDOG","MDB","CFLT","GTLB"]},
+            {"tickers":["COHR","LITE","MRVL","GLW","CIEN","GFS","AAOI","POET"]},
+            {"tickers":["NEE","CEG","VST","PWR","NVT","PRIM"]},
+            {"tickers":["CEG","BWXT","CCJ","OKLO","NNE","SMR","LTBR"]},
+            {"tickers":["TSLA","NVDA","ABB","ROK","HON"]},
+            {"tickers":["RTX","LMT","NOC","BA","GD"]},
+            {"tickers":["LLY","ABBV","TEVA","RXRX","ABSI"]},
+            {"tickers":["IBM","IONQ","RGTI","QUBT","QMCO","ARQQ"]},
+            {"tickers":["EQIX","AMT","DLR","VRT","DELL","SMCI","HPE","NTAP"]},
+            {"tickers":["ASML","AMAT","LRCX","KLAC","TER","ONTO"]},
+            {"tickers":["ALB","MP"]},
+        ]
+        for tk in cat["tickers"]
+        if ".KS" not in tk and ".KQ" not in tk
+    })
+
+    # ── 원클릭 스크리닝 ──
+    _disc_existing = {s.get("ticker") for s in load_stocks()}
+    _today_str = datetime.today().strftime("%Y-%m-%d")
+
+    _run_col, _info_col = st.columns([2, 3])
+    with _run_col:
+        _run_all = st.button("🔍 오늘 스크리닝 실행", type="primary", use_container_width=True, key="btn_run_all")
+    with _info_col:
+        _last_run = st.session_state.get("scr_last_run")
+        if _last_run:
+            _n_moat = len(st.session_state.get("scr_moat_results", []))
+            _n_tr   = len(st.session_state.get("scr_tr_results", []))
+            st.markdown(f'<div style="font-size:0.78em;opacity:0.5;padding-top:10px">마지막 실행: {_last_run} &nbsp;·&nbsp; AI해자 {_n_moat}개 · 흑자전환 {_n_tr}개 발견</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div style="font-size:0.78em;opacity:0.4;padding-top:10px">버튼을 눌러 오늘 유망 종목을 스크리닝합니다 (약 1~2분 소요)</div>', unsafe_allow_html=True)
+
+    if _run_all:
+        # AI 해자 스크리닝
+        _moat_results = []
+        _prog = st.progress(0, text="[1/2] AI 해자 스크리닝 중...")
+        for _i, _tk in enumerate(_SCR_UNIVERSE):
+            _prog.progress((_i+1)/len(_SCR_UNIVERSE)/2, text=f"[1/2] AI 해자 분석 중: {_tk}")
+            _fd = get_fundamental_data(_tk)
+            if not _fd: continue
+            _gm = _fd.get("grossMargin"); _rg = _fd.get("revenueGrowth"); _om = _fd.get("operatingMargin")
+            if _gm is None or _rg is None: continue
+            if _gm*100 < 40 or _rg*100 < 10: continue
+            if (_om or 0) < 0: continue
+            _sc = score_ai_moat(_fd)
+            if _sc < 4: continue
+            _moat_results.append({
+                "ticker":_tk, "name":_fd.get("name",_tk), "type":"AI해자",
+                "grossMargin":_gm, "revenueGrowth":_rg, "operatingMargin":_om,
+                "score":_sc, "marketCap":_fd.get("marketCap"),
+            })
+        # 흑자전환 스크리닝
+        _tr_results = []
+        for _i, _tk in enumerate(_SCR_UNIVERSE):
+            _prog.progress(0.5 + (_i+1)/len(_SCR_UNIVERSE)/2, text=f"[2/2] 흑자전환 분석 중: {_tk}")
+            _td = get_turnaround_data(_tk)
+            if not _td: continue
+            _gm = _td.get("grossMargin"); _rg = _td.get("revenueGrowth"); _om = _td.get("operatingMargin")
+            if _gm is None or _rg is None: continue
+            if _gm*100 < 35 or _rg*100 < 20: continue
+            if (_om or 0) >= 0: continue
+            _sc = score_turnaround(_td)
+            if _sc < 4: continue
+            _tr_results.append({
+                "ticker":_tk, "name":_td.get("name",_tk), "type":"흑자전환",
+                "grossMargin":_gm, "revenueGrowth":_rg, "operatingMargin":_om,
+                "op_trend":_td.get("op_trend"), "score":_sc,
+                "marketCap":_td.get("marketCap"),
+            })
+        _prog.empty()
+        _moat_results.sort(key=lambda x: x["score"], reverse=True)
+        _tr_results.sort(key=lambda x: x["score"], reverse=True)
+        st.session_state["scr_moat_results"] = _moat_results
+        st.session_state["scr_tr_results"]   = _tr_results
+        st.session_state["scr_last_run"]      = _today_str
+        st.rerun()
+
+    # 결과 표시 (session_state 유지)
+    _moat_res = st.session_state.get("scr_moat_results", [])
+    _tr_res   = st.session_state.get("scr_tr_results", [])
+
+    if _moat_res or _tr_res:
+        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+        def _render_scr_table(rows, score_max, label_color):
+            """스크리닝 결과 테이블 + 관심목록 추가 버튼"""
+            _disc_now = {s.get("ticker") for s in load_stocks()}
+            _hcols = st.columns([2,3,2,2,2,1,2])
+            for _hc, _hl in zip(_hcols, ["종목","이름","총이익률","매출성장","영업이익률","점수","추가"]):
+                _hc.markdown(f'<div style="font-size:0.63em;opacity:0.35;font-weight:700;letter-spacing:1px;padding-bottom:4px;border-bottom:1px solid rgba(128,128,128,0.1)">{_hl}</div>', unsafe_allow_html=True)
+            for _r in rows:
+                _tk2 = _r["ticker"]
+                _already = _tk2 in _disc_now
+                _rc = st.columns([2,3,2,2,2,1,2])
+                _lnk = stock_link_url(_tk2)
+                _mc  = f'${_r["marketCap"]/1e9:.0f}B' if _r.get("marketCap") else "—"
+                _om_v = f'{_r["operatingMargin"]*100:.1f}%' if _r.get("operatingMargin") is not None else "—"
+                _rg_c = "#ef4444" if _r["revenueGrowth"]>=0.30 else "#fbbf24" if _r["revenueGrowth"]>=0.15 else "inherit"
+                _stars = "★" * min(_r["score"], score_max)
+                with _rc[0]: st.markdown(f'<div style="padding:5px 0;font-size:0.82em;font-weight:700"><a href="{_lnk}" target="_blank" style="color:inherit;text-decoration:none">{_tk2}</a> <span style="opacity:0.28;font-size:0.72em">{_mc}</span></div>', unsafe_allow_html=True)
+                with _rc[1]: st.markdown(f'<div style="padding:5px 0;font-size:0.78em;opacity:0.65">{_r["name"][:20]}</div>', unsafe_allow_html=True)
+                with _rc[2]: st.markdown(f'<div style="padding:5px 0;font-size:0.82em;font-weight:600;color:#34d399">{_r["grossMargin"]*100:.1f}%</div>', unsafe_allow_html=True)
+                with _rc[3]: st.markdown(f'<div style="padding:5px 0;font-size:0.82em;font-weight:600;color:{_rg_c}">{_r["revenueGrowth"]*100:+.1f}%</div>', unsafe_allow_html=True)
+                with _rc[4]: st.markdown(f'<div style="padding:5px 0;font-size:0.82em;font-weight:600;color:{label_color}">{_om_v}</div>', unsafe_allow_html=True)
+                with _rc[5]: st.markdown(f'<div style="padding:5px 0;font-size:0.75em;color:#fbbf24">{_stars}</div>', unsafe_allow_html=True)
+                with _rc[6]:
+                    if _already:
+                        st.markdown('<div style="padding:5px 0;font-size:0.72em;opacity:0.35">✓ 목록에 있음</div>', unsafe_allow_html=True)
+                    else:
+                        if st.button("＋ 추가", key=f"add_{_tk2}_{_r['type']}"):
+                            _info2 = get_info(_tk2)
+                            _nm2   = _info2.get("shortName") or _tk2 if _info2 else _tk2
+                            _new_s = {
+                                "ticker": _tk2, "name": _nm2,
+                                "market": "US",
+                                "sector": "🤖 AI_반도체" if _r["type"]=="AI해자" else "🌐 기술_전반",
+                                "added_date": _today_str,
+                                "current_status": "관찰 중",
+                                "discovery_reason": f"IronMin 스크리너 [{_r['type']}] — 매출총이익률 {_r['grossMargin']*100:.1f}%, 매출성장 {_r['revenueGrowth']*100:+.1f}%",
+                                "catalysts": [f"매출성장 {_r['revenueGrowth']*100:.0f}%", "AI·기술 테마"],
+                                "risks": ["밸류에이션 점검 필요"],
+                                "buy_triggers": ["기술적 돌파", "52주 신고가"],
+                                "target_price": None, "stop_loss": None,
+                                "ironmin_score": min(_r["score"], 5),
+                                "notes": f"스크리닝 자동 발굴 ({_today_str}). 추가 분석 후 상태 업데이트 권장.",
+                            }
+                            _all = load_stocks()
+                            _all.append(_new_s)
+                            save_stocks(_all)
+                            st.success(f"{_tk2} 관심목록에 추가!")
+                            st.rerun()
+
+        if _moat_res:
+            st.markdown(f'<div style="font-size:0.8em;font-weight:700;margin:10px 0 6px">🏰 AI 해자 — {len(_moat_res)}개</div>', unsafe_allow_html=True)
+            _render_scr_table(_moat_res, 8, "#34d399")
+
+        if _tr_res:
+            st.markdown(f'<div style="font-size:0.8em;font-weight:700;margin:16px 0 6px">🚀 흑자전환 후보 — {len(_tr_res)}개</div>', unsafe_allow_html=True)
+            _render_scr_table(_tr_res, 9, "#f87171")
+
+    elif not st.session_state.get("scr_last_run"):
+        st.markdown('<div style="font-size:0.82em;opacity:0.4;margin:20px 0;text-align:center">스크리닝 결과가 여기에 표시됩니다</div>', unsafe_allow_html=True)
+
+    st.markdown("<hr class='dot-divider'>", unsafe_allow_html=True)
+
     stocks = load_stocks()
     if not stocks:
         st.info("아직 발굴된 종목이 없습니다.")
@@ -1599,7 +2019,6 @@ elif "발굴 종목" in menu:
             risks_h = "".join(f'<span class="tag t-red">⚠ {r}</span>'  for r in risks)
             trigs_h = "".join(f'<span class="tag t-amber">▶ {t}</span>'for t in trigs)
 
-            # ── 카드 (전체 폭) ──
             st.markdown(f"""
 <div class="card">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
@@ -1637,7 +2056,27 @@ elif "발굴 종목" in menu:
   </div>
 </div>""", unsafe_allow_html=True)
 
-            # ── 주가 차트 (전체 폭, 1년) ──
+            with st.spinner(""):
+                _news_list = get_news_kr(tk)
+            if _news_list:
+                _news_items = ""
+                for _n in _news_list:
+                    _nl  = _n.get("link","")
+                    _nd  = str(_n.get("date",""))[:10]
+                    _nt  = _n.get("title","")
+                    _anchor = f'<a href="{_nl}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px dotted rgba(128,128,128,0.25)">{_nt}</a>' if _nl else _nt
+                    _news_items += f"""
+<div style="display:flex;gap:10px;align-items:flex-start;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.07)">
+  <div style="font-size:0.65em;opacity:0.3;white-space:nowrap;padding-top:2px;min-width:60px">{_nd}</div>
+  <div style="font-size:0.8em;line-height:1.5;flex:1">{_anchor}</div>
+</div>"""
+                st.markdown(f"""
+<div style="background:var(--secondary-background-color);border:1px solid rgba(128,128,128,0.13);
+            border-radius:10px;padding:10px 14px;margin-bottom:4px">
+  <div style="font-size:0.6em;font-weight:700;opacity:0.35;letter-spacing:1.5px;margin-bottom:6px">📰 최신 뉴스</div>
+  {_news_items}
+</div>""", unsafe_allow_html=True)
+
             with st.spinner(""):
                 df_h = get_hist(tk, "1y")
             if not df_h.empty:
@@ -1645,70 +2084,41 @@ elif "발굴 종목" in menu:
                 ret  = (cl_h.iloc[-1] - cl_h.iloc[0]) / cl_h.iloc[0] * 100
                 ret_c = "#ef4444" if ret >= 0 else "#3b82f6"
                 ret_a = "▲" if ret >= 0 else "▼"
-
-                # MA20, MA60
                 ma20 = cl_h.rolling(20).mean()
                 ma60 = cl_h.rolling(60).mean()
-
                 fig_s = go.Figure()
-                fig_s.add_trace(go.Scatter(
-                    x=df_h.index, y=cl_h, mode="lines", name="주가",
-                    line=dict(color="#3b82f6", width=2),
-                    fill="tozeroy", fillcolor="rgba(59,130,246,0.05)"
-                ))
-                fig_s.add_trace(go.Scatter(
-                    x=df_h.index, y=ma20, mode="lines", name="MA20",
-                    line=dict(color="#f59e0b", width=1.2, dash="dot")
-                ))
-                fig_s.add_trace(go.Scatter(
-                    x=df_h.index, y=ma60, mode="lines", name="MA60",
-                    line=dict(color="#8b5cf6", width=1.2, dash="dot")
-                ))
+                fig_s.add_trace(go.Scatter(x=df_h.index, y=cl_h, mode="lines", name="주가",
+                    line=dict(color="#3b82f6", width=2), fill="tozeroy", fillcolor="rgba(59,130,246,0.05)"))
+                fig_s.add_trace(go.Scatter(x=df_h.index, y=ma20, mode="lines", name="MA20",
+                    line=dict(color="#f59e0b", width=1.2, dash="dot")))
+                fig_s.add_trace(go.Scatter(x=df_h.index, y=ma60, mode="lines", name="MA60",
+                    line=dict(color="#8b5cf6", width=1.2, dash="dot")))
                 if target:
-                    fig_s.add_hline(
-                        y=target, line_dash="dash", line_color="#4ade80", line_width=1.3,
-                        annotation_text=f"목표 {tgt_str}",
-                        annotation_font_size=10, annotation_font_color="#4ade80",
-                        annotation_position="right"
-                    )
+                    fig_s.add_hline(y=target, line_dash="dash", line_color="#4ade80", line_width=1.3,
+                        annotation_text=f"목표 {tgt_str}", annotation_font_size=10,
+                        annotation_font_color="#4ade80", annotation_position="right")
                 if stop:
-                    fig_s.add_hline(
-                        y=stop, line_dash="dash", line_color="#f87171", line_width=1.3,
-                        annotation_text=f"손절 {stp_str}",
-                        annotation_font_size=10, annotation_font_color="#f87171",
-                        annotation_position="right"
-                    )
-                fig_s.update_layout(
-                    height=260,
-                    margin=dict(t=36, b=8, l=4, r=80),
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(128,128,128,0.03)",
+                    fig_s.add_hline(y=stop, line_dash="dash", line_color="#f87171", line_width=1.3,
+                        annotation_text=f"손절 {stp_str}", annotation_font_size=10,
+                        annotation_font_color="#f87171", annotation_position="right")
+                fig_s.update_layout(height=260, margin=dict(t=36, b=8, l=4, r=80),
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(128,128,128,0.03)",
                     legend=dict(orientation="h", x=1, xanchor="right", y=1.12,
-                                font=dict(size=10, family="Pretendard"),
-                                bgcolor="rgba(0,0,0,0)"),
+                                font=dict(size=10, family="Pretendard"), bgcolor="rgba(0,0,0,0)"),
                     font=dict(family="Pretendard", color="rgba(128,128,128,0.5)"),
-                    xaxis=dict(showgrid=False, color="rgba(128,128,128,0.3)",
-                               tickfont=dict(size=9)),
+                    xaxis=dict(showgrid=False, color="rgba(128,128,128,0.3)", tickfont=dict(size=9)),
                     yaxis=dict(showgrid=True, gridcolor="rgba(128,128,128,0.07)",
                                color="rgba(128,128,128,0.4)", tickfont=dict(size=9)),
-                    title=dict(
-                        text=f"1년 주가 흐름 &nbsp; <span style='color:{ret_c};font-size:0.9em'>{ret_a} {abs(ret):.1f}%</span>",
-                        font=dict(size=11, family="Pretendard"), x=0, xanchor="left"
-                    )
-                )
+                    title=dict(text=f"1년 주가 흐름 &nbsp; <span style='color:{ret_c};font-size:0.9em'>{ret_a} {abs(ret):.1f}%</span>",
+                               font=dict(size=11, family="Pretendard"), x=0, xanchor="left"))
                 st.plotly_chart(fig_s, use_container_width=True, config={"displayModeBar": False})
 
-            # ── 상태 변경 UI ──
             STATUS_OPTS = ["관찰 중", "매수 고려", "주의"]
             cur_idx = STATUS_OPTS.index(status) if status in STATUS_OPTS else 0
             sc1, sc2, sc3 = st.columns([2, 1, 3])
             with sc1:
-                new_status = st.selectbox(
-                    "상태 변경", STATUS_OPTS,
-                    index=cur_idx,
-                    key=f"status_{tk}",
-                    label_visibility="collapsed"
-                )
+                new_status = st.selectbox("상태 변경", STATUS_OPTS, index=cur_idx,
+                    key=f"status_{tk}", label_visibility="collapsed")
             with sc2:
                 if st.button("저장", key=f"save_{tk}", type="primary"):
                     all_stocks = load_stocks()
@@ -1754,7 +2164,6 @@ elif "분석" in menu:
         if not info or df.empty:
             st.error("데이터를 불러올 수 없습니다. 티커를 확인해주세요.")
         else:
-            # ── 기본 정보 ──
             nm       = stock_display_name(tk) if tk in STOCK_NAMES else (info.get("shortName") or info.get("longName") or tk)
             sector   = info.get("sector", "—")
             industry = info.get("industry", "—")
@@ -1764,11 +2173,6 @@ elif "분석" in menu:
             pfx      = "₩" if is_kr_a else "$"
             px_dec   = 0 if is_kr_a else 2
 
-            # KR 주식 재무 데이터 제한 안내
-            if is_kr_a:
-                st.info("🇰🇷 국내 주식은 yfinance 기준 재무 데이터가 일부 제공되지 않을 수 있습니다. 가격·차트·기술적 분석은 정상 동작합니다.", icon=None)
-
-            # ── 가격 ──
             cl    = df["Close"].squeeze()
             lx    = cl.iloc[-1]
             prev  = info.get("previousClose") or (cl.iloc[-2] if len(cl) >= 2 else lx)
@@ -1778,7 +2182,6 @@ elif "분석" in menu:
             cap   = info.get("marketCap")
             beta  = info.get("beta")
 
-            # ── 재무 ──
             per   = info.get("trailingPE")
             fper  = info.get("forwardPE")
             pbr   = info.get("priceToBook")
@@ -1790,7 +2193,30 @@ elif "분석" in menu:
             peg   = info.get("pegRatio")
             eps   = info.get("trailingEps")
 
-            # ── 이동평균·기술 ──
+            _dart_fin = {}
+            if is_kr_a:
+                _stock_code = tk.replace(".KS", "").replace(".KQ", "")
+                _dart_key_ok = _secret("dart", "api_key") and "여기에" not in _secret("dart", "api_key", "여기에")
+                if _dart_key_ok:
+                    with st.spinner("🇰🇷 DART 재무데이터 조회 중..."):
+                        _corp_code = get_dart_corp_code(_stock_code)
+                        if _corp_code:
+                            _dart_fin = get_dart_kr_financials(_corp_code)
+                    if _dart_fin:
+                        if _dart_fin.get("opm")   is not None: opm   = _dart_fin["opm"]
+                        if _dart_fin.get("roe")   is not None: roe   = _dart_fin["roe"]
+                        if _dart_fin.get("dte")   is not None: dte   = _dart_fin["dte"] / 100
+                        if _dart_fin.get("rev_g") is not None: rev_g = _dart_fin["rev_g"]
+                        _net  = _dart_fin.get("당기순이익")
+                        _eq   = _dart_fin.get("자본총계")
+                        _cap  = info.get("marketCap")
+                        if _cap and _net and _net > 0 and not per:
+                            per = _cap / _net
+                        if _cap and _eq and _eq > 0 and not pbr:
+                            pbr = _cap / _eq
+                else:
+                    st.info("🔑 DART API 키를 설정하면 국내주식 재무데이터를 볼 수 있습니다.", icon=None)
+
             df["MA20"]  = cl.rolling(20).mean()
             df["MA60"]  = cl.rolling(60).mean()
             df["MA120"] = cl.rolling(120).mean()
@@ -1802,34 +2228,25 @@ elif "분석" in menu:
             mv   = df["MACD"].iloc[-1]
             ms   = df["SIG"].iloc[-1]
 
-            # ── IronMin 스코어 (0~10) ──
             sc = 0; rsn = []
-
-            # 성장성
             if rev_g is not None:
                 if rev_g > 0.30:   sc += 2; rsn.append(f"✅ 매출성장 {rev_g*100:.0f}% — 고성장")
                 elif rev_g > 0.10: sc += 1; rsn.append(f"✅ 매출성장 {rev_g*100:.0f}%")
                 elif rev_g < 0:    sc -= 1; rsn.append(f"❌ 매출 역성장 {rev_g*100:.0f}%")
                 else:                        rsn.append(f"➖ 매출성장 {rev_g*100:.0f}%")
             if eps_g and eps_g > 0.20: sc += 1; rsn.append(f"✅ EPS성장 {eps_g*100:.0f}%")
-
-            # 저평가도
             if per:
                 if per < 20:   sc += 2; rsn.append(f"✅ PER {per:.1f} — 저평가")
                 elif per < 40: sc += 1; rsn.append(f"➖ PER {per:.1f} — 적정")
                 elif per > 80: sc -= 1; rsn.append(f"❌ PER {per:.1f} — 고평가")
                 else:                    rsn.append(f"➖ PER {per:.1f}")
             if pbr and pbr < 3: sc += 1; rsn.append(f"✅ PBR {pbr:.2f} — 매력적")
-
-            # 재무건전성
             if roe is not None:
                 if roe > 0.15:   sc += 1; rsn.append(f"✅ ROE {roe*100:.1f}%")
                 elif roe < 0:    sc -= 1; rsn.append(f"❌ ROE 음수 ({roe*100:.1f}%)")
             if dte is not None:
                 if dte < 100:    sc += 1; rsn.append(f"✅ 부채비율 {dte:.0f}% — 안정")
                 elif dte > 200:  sc -= 1; rsn.append(f"❌ 부채비율 {dte:.0f}% — 과다")
-
-            # 모멘텀
             if not pd.isna(m60):
                 if lx > m60:  sc += 1; rsn.append("✅ 주가 > MA60 (중기 상승)")
                 else:         sc -= 1; rsn.append("❌ 주가 < MA60 (중기 하락)")
@@ -1839,21 +2256,18 @@ elif "분석" in menu:
                 elif rsi < 30:      sc += 1; rsn.append(f"✅ RSI {rsi:.0f} — 과매도(역발상)")
 
             sc = max(0, min(10, sc))
-            stars = round(sc / 2)  # 0~5 변환
+            stars = round(sc / 2)
             star_html = "".join(['<span class="star-on">★</span>' if i < stars else '<span class="star-off">★</span>' for i in range(5)])
 
             if sc >= 7:   grade, gcls, gbadge = "강력 관심", "b-green", "t-green"
             elif sc >= 4: grade, gcls, gbadge = "관심 보유", "b-amber", "t-amber"
             else:         grade, gcls, gbadge = "신중 검토", "b-red",   "t-red"
 
-            # ── 종목 헤더 카드 ──
             chg_c = "#ef4444" if chg >= 0 else "#3b82f6"
             chg_a = "▲" if chg >= 0 else "▼"
             price_fmt = f"{pfx}{lx:,.{px_dec}f}" if lx >= 1 else f"{pfx}{lx:.4f}"
             hi_fmt = f"{pfx}{hi52:,.{px_dec}f}" if hi52 else "—"
             lo_fmt = f"{pfx}{lo52:,.{px_dec}f}" if lo52 else "—"
-
-            # 52주 위치 바
             pos_pct = ""
             if hi52 and lo52 and hi52 > lo52:
                 pos_pct = f"{(lx - lo52) / (hi52 - lo52) * 100:.0f}"
@@ -1885,8 +2299,25 @@ elif "분석" in menu:
   </div>
 </div>""", unsafe_allow_html=True)
 
-            # ── 재무 지표 8개 카드 ──
             st.markdown(sec_hdr("📊", "재무 지표"), unsafe_allow_html=True)
+
+            if is_kr_a and _dart_fin:
+                def _fmt_krw(v):
+                    if v is None: return "N/A"
+                    abs_v = abs(v)
+                    if abs_v >= 1e12: return f"{'−' if v<0 else ''}₩{abs_v/1e12:.1f}조"
+                    if abs_v >= 1e8:  return f"{'−' if v<0 else ''}₩{abs_v/1e8:.0f}억"
+                    return f"{'−' if v<0 else ''}₩{abs_v/1e6:.0f}백만"
+                _yr_lbl = f"{_dart_fin.get('bsns_year','?')}년 ({_dart_fin.get('fs_div','?')})"
+                dart_cards = [
+                    ("매출액",     _fmt_krw(_dart_fin.get("매출액"))),
+                    ("영업이익",   _fmt_krw(_dart_fin.get("영업이익"))),
+                    ("당기순이익", _fmt_krw(_dart_fin.get("당기순이익"))),
+                    ("자본총계",   _fmt_krw(_dart_fin.get("자본총계"))),
+                ]
+                _dart_grid = "".join(f'<div class="idx-card" style="margin-bottom:8px"><div style="font-size:0.60em;opacity:0.40;font-weight:600;margin-bottom:4px">{l}</div><div style="font-size:0.95em;font-weight:700">{v}</div></div>' for l, v in dart_cards)
+                st.markdown(f'<div style="font-size:0.7em;opacity:0.5;margin-bottom:6px">📋 DART 재무제표 — {_yr_lbl}</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px">{_dart_grid}</div>', unsafe_allow_html=True)
+
             fi = [
                 ("PER (Trailing)", f"{per:.1f}"      if per  else "N/A"),
                 ("PER (Forward)",  f"{fper:.1f}"     if fper else "N/A"),
@@ -1895,31 +2326,24 @@ elif "분석" in menu:
                 ("매출성장 YoY",   f"{rev_g*100:.1f}%" if rev_g is not None else "N/A"),
                 ("EPS성장 YoY",    f"{eps_g*100:.1f}%" if eps_g is not None else "N/A"),
                 ("영업이익률",     f"{opm*100:.1f}%" if opm  else "N/A"),
-                ("부채비율",       f"{dte:.0f}%"     if dte  else "N/A"),
+                ("부채비율",       f"{dte*100:.0f}%" if (dte and is_kr_a) else (f"{dte:.0f}%" if dte else "N/A")),
             ]
             cols_fi = st.columns(4)
             for i, (lbl, val) in enumerate(fi):
                 with cols_fi[i % 4]:
-                    st.markdown(f"""
-<div class="idx-card" style="margin-bottom:10px">
-  <div style="font-size:0.63em;opacity:0.42;font-weight:600;margin-bottom:5px">{lbl}</div>
-  <div style="font-size:1.15em;font-weight:700">{val}</div>
-</div>""", unsafe_allow_html=True)
+                    st.markdown(f'<div class="idx-card" style="margin-bottom:10px"><div style="font-size:0.63em;opacity:0.42;font-weight:600;margin-bottom:5px">{lbl}</div><div style="font-size:1.15em;font-weight:700">{val}</div></div>', unsafe_allow_html=True)
 
-            # ── IronMin 스코어 근거 ──
             st.markdown(sec_hdr("🎯", "IronMin 스코어 근거"), unsafe_allow_html=True)
             rc1, rc2 = st.columns(2)
             for i, r in enumerate(rsn):
                 with rc1 if i % 2 == 0 else rc2:
                     st.markdown(f'<div style="font-size:0.84em;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.08)">{r}</div>', unsafe_allow_html=True)
 
-            # ── 차트 ──
             st.markdown(sec_hdr("📈", "기술적 분석"), unsafe_allow_html=True)
             fig = make_subplots(rows=4, cols=1, shared_xaxes=True,
                                 row_heights=[0.50, 0.20, 0.17, 0.13], vertical_spacing=0.025,
                                 subplot_titles=["주가 & 이동평균", "RSI", "MACD", "거래량"])
-            fig.add_trace(go.Candlestick(
-                x=df.index, open=df["Open"], high=df["High"],
+            fig.add_trace(go.Candlestick(x=df.index, open=df["Open"], high=df["High"],
                 low=df["Low"], close=df["Close"], name="OHLC",
                 increasing_line_color="#ef4444", decreasing_line_color="#3b82f6"), row=1, col=1)
             for mc, col in {"MA20": "#f59e0b", "MA60": "#3b82f6", "MA120": "#8b5cf6"}.items():
@@ -1934,24 +2358,16 @@ elif "분석" in menu:
             fig.add_trace(go.Bar(x=df.index, y=df["HIST"], name="Hist", marker_color=hc, opacity=0.7), row=3, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df["MACD"], name="MACD", line=dict(color="#3b82f6", width=1.2)), row=3, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df["SIG"],  name="Signal", line=dict(color="#f97316", width=1.2, dash="dot")), row=3, col=1)
-
-            # 거래량 서브플롯 (row 4)
             if "Volume" in df.columns:
                 vol_s = df["Volume"].squeeze()
                 vol_ma20 = vol_s.rolling(20).mean()
                 vol_colors = ["#ef4444" if df["Close"].iloc[i] >= df["Open"].iloc[i]
                               else "#3b82f6" for i in range(len(df))]
-                fig.add_trace(go.Bar(
-                    x=df.index, y=vol_s, name="거래량",
-                    marker_color=vol_colors, opacity=0.55
-                ), row=4, col=1)
-                fig.add_trace(go.Scatter(
-                    x=df.index, y=vol_ma20, name="거래량 MA20",
-                    line=dict(color="#f59e0b", width=1.2, dash="dot")
-                ), row=4, col=1)
-
-            fig.update_layout(
-                height=760, xaxis_rangeslider_visible=False,
+                fig.add_trace(go.Bar(x=df.index, y=vol_s, name="거래량",
+                    marker_color=vol_colors, opacity=0.55), row=4, col=1)
+                fig.add_trace(go.Scatter(x=df.index, y=vol_ma20, name="거래량 MA20",
+                    line=dict(color="#f59e0b", width=1.2, dash="dot")), row=4, col=1)
+            fig.update_layout(height=760, xaxis_rangeslider_visible=False,
                 legend=dict(orientation="h", y=1.02, x=1, xanchor="right",
                             font=dict(family="Pretendard", size=11)),
                 margin=dict(t=28, b=8),
@@ -1961,7 +2377,6 @@ elif "분석" in menu:
             fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.08)", color="rgba(128,128,128,0.45)")
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-            # ── 기업 소개 ──
             if biz:
                 st.markdown(sec_hdr("🏢", "기업 소개"), unsafe_allow_html=True)
                 st.markdown(f'<div class="briefing-box">{biz[:600]}{"..." if len(biz)>600 else ""}</div>',
@@ -1981,57 +2396,23 @@ elif "포트폴리오" in menu:
   <div style="font-size:0.75em;color:#2d4a72">섹터별 그룹핑 · 수익률 추적</div>
 </div>""", unsafe_allow_html=True)
 
-    # ── 핫 섹터 정의 ──
     SECTORS = [
-        # ── AI 테마 ──
-        "🤖 AI_반도체",
-        "⚡ AI_전력인프라",
-        "💡 AI_광학·인터커넥트",
-        "🏭 AI_데이터센터",
-        "🦾 AI_로봇",
-        # ── 에너지 ──
-        "⚛️ 원자력",
-        "☀️ 태양광·클린에너지",
-        "🔋 2차전지",
-        # ── 방산·우주 ──
-        "🛡️ 방산",
-        "🚀 우주·항공",
-        # ── 글로벌 성장 ──
-        "🧬 바이오·제약",
-        "🌐 기술_전반",
-        # ── 소비·방어 ──
-        "🛒 소비재_성장",
-        "🧴 필수소비재·방어",
-        # ── 헷지·안정 ──
-        "🏠 리츠·인프라",
-        "💰 원자재·귀금속",
-        "🏦 금융",
-        # ── 기타 ──
-        "🗂️ 기타",
+        "🤖 AI_반도체", "⚡ AI_전력인프라", "💡 AI_광통신", "🏭 AI_데이터센터", "🦾 AI_로봇",
+        "⚛️ 원자력", "☀️ 태양광·클린에너지", "🔋 2차전지",
+        "🛡️ 방산", "🚀 우주·항공",
+        "🧬 바이오·제약", "🌐 기술_전반",
+        "🛒 소비재_성장", "🧴 필수소비재·방어",
+        "🏠 리츠·인프라", "💰 원자재·귀금속", "🏦 금융", "🗂️ 기타",
     ]
-    # 섹터별 팔레트
     SECTOR_PAL = {
-        "🤖 AI_반도체":        "#3b82f6",
-        "⚡ AI_전력인프라":     "#f59e0b",
-        "💡 AI_광학·인터커넥트":"#a78bfa",
-        "🏭 AI_데이터센터":    "#06b6d4",
-        "🦾 AI_로봇":          "#10b981",
-        "⚛️ 원자력":           "#f97316",
-        "☀️ 태양광·클린에너지": "#fcd34d",
-        "🔋 2차전지":          "#34d399",
-        "🛡️ 방산":             "#e2645a",
-        "🚀 우주·항공":        "#c084fc",
-        "🧬 바이오·제약":      "#f472b6",
-        "🌐 기술_전반":        "#60a5fa",
-        "🛒 소비재_성장":      "#fb923c",
-        "🧴 필수소비재·방어":  "#86efac",
-        "🏠 리츠·인프라":      "#67e8f9",
-        "💰 원자재·귀금속":    "#fbbf24",
-        "🏦 금융":             "#94a3b8",
-        "🗂️ 기타":             "#475569",
+        "🤖 AI_반도체":"#3b82f6","⚡ AI_전력인프라":"#f59e0b","💡 AI_광통신":"#a78bfa",
+        "🏭 AI_데이터센터":"#06b6d4","🦾 AI_로봇":"#10b981","⚛️ 원자력":"#f97316",
+        "☀️ 태양광·클린에너지":"#fcd34d","🔋 2차전지":"#34d399","🛡️ 방산":"#e2645a",
+        "🚀 우주·항공":"#c084fc","🧬 바이오·제약":"#f472b6","🌐 기술_전반":"#60a5fa",
+        "🛒 소비재_성장":"#fb923c","🧴 필수소비재·방어":"#86efac","🏠 리츠·인프라":"#67e8f9",
+        "💰 원자재·귀금속":"#fbbf24","🏦 금융":"#94a3b8","🗂️ 기타":"#475569",
     }
 
-    # ── 종목 추가 ──
     with st.expander("＋ 종목 추가", expanded=not st.session_state.portfolio):
         a1, a2, a3 = st.columns(3)
         with a1: atk  = st.text_input("티커", placeholder="AAPL · 005930.KS")
@@ -2048,12 +2429,8 @@ elif "포트폴리오" in menu:
                     _atk_up = atk.strip().upper()
                     _mapped_name = stock_display_name(_atk_up) if _atk_up in STOCK_NAMES else (info.get("shortName") or _atk_up)
                     st.session_state.portfolio.append({
-                        "ticker":   _atk_up,
-                        "name":     _mapped_name,
-                        "sector":   asec,
-                        "qty":      aqty,
-                        "buy_price":apx,
-                        "buy_date": str(adt)
+                        "ticker": _atk_up, "name": _mapped_name, "sector": asec,
+                        "qty": aqty, "buy_price": apx, "buy_date": str(adt)
                     })
                     st.success(f"{atk.upper()} ({asec}) 추가됨")
                     st.rerun()
@@ -2061,7 +2438,6 @@ elif "포트폴리오" in menu:
     if not st.session_state.portfolio:
         st.info("보유 종목을 추가해주세요.")
     else:
-        # ── 현재가 / 수익 계산 ──
         enriched = []
         ti = tv = 0.0
         for i, it in enumerate(st.session_state.portfolio):
@@ -2072,23 +2448,15 @@ elif "포트폴리오" in menu:
             pp   = pnl / inv * 100 if inv else 0
             ti  += inv; tv += val
             enriched.append({
-                "_i":    i,
-                "sector": it.get("sector", "🗂️ 기타"),
-                "ticker": it["ticker"],
-                "name":   it["name"],
-                "qty":    it["qty"],
-                "buy_px": it["buy_price"],
-                "cur_px": cur,
-                "inv":    inv,
-                "val":    val,
-                "pnl":    pnl,
-                "pp":     pp,
-                "buy_date": it["buy_date"],
+                "_i": i, "sector": it.get("sector", "🗂️ 기타"),
+                "ticker": it["ticker"], "name": it["name"],
+                "qty": it["qty"], "buy_px": it["buy_price"],
+                "cur_px": cur, "inv": inv, "val": val,
+                "pnl": pnl, "pp": pp, "buy_date": it["buy_date"],
             })
         tp  = tv - ti
         tpp = tp / ti * 100 if ti else 0
 
-        # ── 전체 요약 ──
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("총 투자금", f"{ti:,.0f}")
         m2.metric("총 평가금", f"{tv:,.0f}")
@@ -2097,13 +2465,10 @@ elif "포트폴리오" in menu:
 
         st.markdown("<hr class='dot-divider'>", unsafe_allow_html=True)
 
-        # ── 섹터별 그룹 표시 ──
         from collections import defaultdict
         by_sector = defaultdict(list)
         for row in enriched:
             by_sector[row["sector"]].append(row)
-
-        # 섹터 순서는 SECTORS 기준
         ordered_sectors = [s for s in SECTORS if s in by_sector]
 
         for sec in ordered_sectors:
@@ -2117,47 +2482,41 @@ elif "포트폴리오" in menu:
             pnl_c  = "#ef4444" if s_pnl >= 0 else "#3b82f6"
             pnl_a  = "▲" if s_pnl >= 0 else "▼"
 
-            # 섹터 헤더
             st.markdown(f"""
 <div style="display:flex;align-items:center;justify-content:space-between;
             padding:10px 16px;margin-bottom:6px;
             background:linear-gradient(90deg,{color}18,transparent);
             border-left:3px solid {color};border-radius:0 8px 8px 0">
   <div style="display:flex;align-items:center;gap:10px">
-    <span style="font-size:0.9em;font-weight:700;color:#d1e0f5">{sec}</span>
-    <span style="font-size:0.68em;color:#2d4a72;background:#080f1e;
-                 padding:2px 8px;border-radius:10px;border:1px solid #111d30">{len(rows)}종목</span>
-    <span style="font-size:0.68em;color:#2d4a72">비중 {s_wt:.1f}%</span>
+    <span style="font-size:0.9em;font-weight:700">{sec}</span>
+    <span style="font-size:0.68em;opacity:0.5;background:rgba(128,128,128,0.1);padding:2px 8px;border-radius:10px">{len(rows)}종목 · 비중 {s_wt:.1f}%</span>
   </div>
   <div style="text-align:right">
     <span style="font-size:0.82em;font-weight:700;color:{pnl_c}">{pnl_a} {abs(s_pp):.2f}%</span>
-    <span style="font-size:0.72em;color:#2d4a72;margin-left:8px">${s_pnl:+,.0f}</span>
+    <span style="font-size:0.72em;opacity:0.45;margin-left:8px">{s_pnl:+,.0f}</span>
   </div>
 </div>""", unsafe_allow_html=True)
 
-            # 종목 행
             for r in rows:
-                _r_kr   = ".KS" in r["ticker"] or ".KQ" in r["ticker"]
-                _r_pfx  = "₩" if _r_kr else "$"
-                _r_dec  = 0 if _r_kr else 2
-                cur_str  = f"{_r_pfx}{r['cur_px']:,.{_r_dec}f}" if r["cur_px"] else "—"
-                buy_str  = f"{_r_pfx}{r['buy_px']:,.{_r_dec}f}"
-                pnl_str  = f"{_r_pfx}{r['pnl']:+,.{_r_dec}f}"
-                pc       = "#ef4444" if r["pp"] >= 0 else "#3b82f6"
-                pa       = "▲" if r["pp"] >= 0 else "▼"
-                inv_w    = r["val"] / tv * 100 if tv else 0
+                _r_kr  = ".KS" in r["ticker"] or ".KQ" in r["ticker"]
+                _r_pfx = "₩" if _r_kr else "$"
+                _r_dec = 0 if _r_kr else 2
+                cur_str = f"{_r_pfx}{r['cur_px']:,.{_r_dec}f}" if r["cur_px"] else "—"
+                buy_str = f"{_r_pfx}{r['buy_px']:,.{_r_dec}f}"
+                pnl_str = f"{_r_pfx}{r['pnl']:+,.{_r_dec}f}"
+                pc = "#ef4444" if r["pp"] >= 0 else "#3b82f6"
+                pa = "▲" if r["pp"] >= 0 else "▼"
+                inv_w = r["val"] / tv * 100 if tv else 0
                 st.markdown(f"""
 <div style="display:flex;align-items:center;justify-content:space-between;
             padding:8px 16px 8px 24px;margin-bottom:3px;
             background:var(--secondary-background-color);
             border:1px solid rgba(128,128,128,0.1);border-radius:8px">
-  <div style="display:flex;align-items:center;gap:12px;min-width:0">
-    <div style="min-width:0">
-      <div style="font-size:0.85em;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px"><a href="{stock_link_url(r['ticker'])}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px dotted rgba(128,128,128,0.25)">{stock_display_name(r['ticker']) if r['ticker'] in STOCK_NAMES else r['name']}</a></div>
-      <div style="font-size:0.68em;opacity:0.38;letter-spacing:0.3px;margin-top:1px">{r['ticker']} &nbsp;·&nbsp; {r['qty']}주 · 매수 {buy_str}</div>
-    </div>
+  <div>
+    <div style="font-size:0.85em;font-weight:700"><a href="{stock_link_url(r['ticker'])}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px dotted rgba(128,128,128,0.25)">{stock_display_name(r['ticker']) if r['ticker'] in STOCK_NAMES else r['name']}</a></div>
+    <div style="font-size:0.68em;opacity:0.38;margin-top:1px">{r['ticker']} · {r['qty']}주 · 매수 {buy_str}</div>
   </div>
-  <div style="display:flex;align-items:center;gap:20px;text-align:right;flex-shrink:0">
+  <div style="display:flex;align-items:center;gap:20px;text-align:right">
     <span style="font-size:0.82em;opacity:0.65">{cur_str}</span>
     <span style="font-size:0.82em;font-weight:700;color:{pc}">{pa} {abs(r['pp']):.2f}%</span>
     <span style="font-size:0.78em;opacity:0.45">{pnl_str}</span>
@@ -2167,7 +2526,6 @@ elif "포트폴리오" in menu:
 
             st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-        # ── 삭제 ──
         st.markdown("<hr class='dot-divider'>", unsafe_allow_html=True)
         all_tks = [r["ticker"] for r in enriched]
         dc1, dc2 = st.columns([3, 1])
@@ -2175,40 +2533,30 @@ elif "포트폴리오" in menu:
         with dc2:
             st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
             if st.button("삭제"):
-                # 첫 번째 일치 항목만 삭제
                 for idx, p in enumerate(st.session_state.portfolio):
                     if p["ticker"] == dtk:
                         st.session_state.portfolio.pop(idx)
                         break
                 st.rerun()
 
-        # ── 차트: 섹터 비중 + 섹터별 수익률 ──
         if len(enriched) >= 1:
             st.markdown("<hr class='dot-divider'>", unsafe_allow_html=True)
             ch1, ch2 = st.columns(2)
-
-            # 섹터 비중 도넛
             with ch1:
                 st.markdown(sec_hdr("🥧", "섹터 비중"), unsafe_allow_html=True)
-                sec_vals  = [(s, sum(r["val"] for r in by_sector[s])) for s in ordered_sectors]
-                s_lbls    = [s for s, _ in sec_vals]
-                s_vs      = [v for _, v in sec_vals]
-                s_colors  = [SECTOR_PAL.get(s, "#475569") for s in s_lbls]
-                fig = go.Figure(go.Pie(
-                    labels=s_lbls, values=s_vs, hole=0.58,
+                sec_vals = [(s, sum(r["val"] for r in by_sector[s])) for s in ordered_sectors]
+                s_lbls   = [s for s, _ in sec_vals]
+                s_vs     = [v for _, v in sec_vals]
+                s_colors = [SECTOR_PAL.get(s, "#475569") for s in s_lbls]
+                fig = go.Figure(go.Pie(labels=s_lbls, values=s_vs, hole=0.58,
                     textinfo="label+percent",
                     marker=dict(colors=s_colors, line=dict(color="#060a12", width=2)),
-                    textfont=dict(family="Pretendard", size=11),
-                ))
-                fig.update_layout(
-                    height=320, margin=dict(t=8, b=8, l=8, r=8),
+                    textfont=dict(family="Pretendard", size=11)))
+                fig.update_layout(height=320, margin=dict(t=8, b=8, l=8, r=8),
                     paper_bgcolor="rgba(0,0,0,0)",
-                    font=dict(color="#7c9ab8", family="Pretendard"),
-                    showlegend=False,
-                )
+                    font=dict(color="#7c9ab8", family="Pretendard"), showlegend=False)
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-            # 섹터별 수익률 바
             with ch2:
                 st.markdown(sec_hdr("📈", "섹터별 수익률"), unsafe_allow_html=True)
                 sec_pps = []
@@ -2222,21 +2570,16 @@ elif "포트폴리오" in menu:
                 bar_vals   = [x[1] for x in sec_pps_sorted]
                 bar_colors = [SECTOR_PAL.get(l, "#475569") if v >= 0 else "#ef4444"
                               for l, v in sec_pps_sorted]
-                fig2 = go.Figure(go.Bar(
-                    x=bar_vals, y=bar_lbls, orientation="h",
+                fig2 = go.Figure(go.Bar(x=bar_vals, y=bar_lbls, orientation="h",
                     marker_color=bar_colors, opacity=0.85,
-                    text=[f"{v:+.2f}%" for v in bar_vals],
-                    textposition="outside",
-                    textfont=dict(color="rgba(128,128,128,0.7)", size=10, family="Pretendard"),
-                ))
-                fig2.update_layout(
-                    height=320, margin=dict(t=8, b=8, l=8, r=60),
-                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(8,15,30,0.5)",
+                    text=[f"{v:+.2f}%" for v in bar_vals], textposition="outside",
+                    textfont=dict(color="rgba(128,128,128,0.7)", size=10, family="Pretendard")))
+                fig2.update_layout(height=320, margin=dict(t=8, b=8, l=8, r=60),
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(128,128,128,0.04)",
                     font=dict(color="#4d7ab5", family="Pretendard"),
-                    xaxis=dict(showgrid=True, gridcolor="#0d1628", color="#2d4a72",
-                               ticksuffix="%", zeroline=True, zerolinecolor="#1a2d4a"),
-                    yaxis=dict(showgrid=False, color="#7c9ab8", tickfont=dict(size=10)),
-                )
+                    xaxis=dict(showgrid=True, gridcolor="rgba(128,128,128,0.08)",
+                               color="#2d4a72", ticksuffix="%", zeroline=True),
+                    yaxis=dict(showgrid=False, color="#7c9ab8", tickfont=dict(size=10)))
                 st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
 
 
@@ -2317,14 +2660,14 @@ elif "매매 신호" in menu:
             t5.metric("ROE",   f"{roe*100:.1f}%" if roe else "N/A")
 
             st.markdown(f"""
-<div style="margin:18px 0 10px;padding:16px 20px;background:#0c1424;border:1px solid #162036;border-radius:12px;display:flex;align-items:center;gap:16px">
+<div style="margin:18px 0 10px;padding:16px 20px;background:var(--secondary-background-color);border:1px solid rgba(128,128,128,0.15);border-radius:12px;display:flex;align-items:center;gap:16px">
   <span class="{scls}">{slbl}</span>
-  <span style="color:#2d4a72;font-size:0.8em">종합 점수 <b style="color:#4d7ab5">{sc:+d}</b> / ±8</span>
+  <span style="opacity:0.45;font-size:0.8em">종합 점수 <b>{sc:+d}</b> / ±8</span>
 </div>""", unsafe_allow_html=True)
 
             with st.expander("신호 근거", expanded=True):
                 for r in rsn:
-                    st.markdown(f'<div style="color:#4d6a8a;font-size:0.86em;padding:4px 0;border-bottom:1px solid #0d1628">{r}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="font-size:0.86em;padding:4px 0;border-bottom:1px solid rgba(128,128,128,0.08)">{r}</div>', unsafe_allow_html=True)
 
             st.markdown("<hr class='dot-divider'>", unsafe_allow_html=True)
             fig=make_subplots(rows=3,cols=1,shared_xaxes=True,
@@ -2345,8 +2688,7 @@ elif "매매 신호" in menu:
             fig.add_trace(go.Bar(x=df.index,y=df["HIST"],name="Hist",marker_color=hc,opacity=0.7),row=3,col=1)
             fig.add_trace(go.Scatter(x=df.index,y=df["MACD"],name="MACD",line=dict(color="#3b82f6",width=1.2)),row=3,col=1)
             fig.add_trace(go.Scatter(x=df.index,y=df["SIG"],name="Signal",line=dict(color="#f97316",width=1.2,dash="dot")),row=3,col=1)
-            fig.update_layout(
-                height=680,xaxis_rangeslider_visible=False,
+            fig.update_layout(height=680,xaxis_rangeslider_visible=False,
                 legend=dict(orientation="h",y=1.02,x=1,xanchor="right",
                             font=dict(family="Pretendard",size=11)),
                 margin=dict(t=28,b=8),
