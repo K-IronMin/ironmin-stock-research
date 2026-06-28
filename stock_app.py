@@ -1159,6 +1159,94 @@ def load_trends():
         with open(TRENDS_FILE, encoding="utf-8") as f: return json.load(f)
     return {}
 
+@st.cache_data(ttl=3600*3)   # 3시간마다 자동 갱신
+def generate_live_briefing() -> dict:
+    """yfinance 실시간 데이터로 시장 브리핑 자동 생성"""
+    try:
+        tickers = ["^GSPC","^IXIC","^DJI","^SOX","^KS11","^KQ11","^VIX","KRW=X","GC=F","CL=F","BTC-USD"]
+        raw = yf.download(tickers, period="10d", auto_adjust=True, progress=False)["Close"]
+
+        def _pct(tk):
+            s = raw[tk].dropna()
+            if len(s) < 2: return None, None
+            return float(s.iloc[-1]), (float(s.iloc[-1]) - float(s.iloc[-2])) / float(s.iloc[-2]) * 100
+
+        def _wpct(tk):
+            s = raw[tk].dropna()
+            if len(s) < 6: return None
+            return (float(s.iloc[-1]) - float(s.iloc[-6])) / float(s.iloc[-6]) * 100
+
+        sp_p,  sp_d  = _pct("^GSPC");  sp_w  = _wpct("^GSPC")
+        nq_p,  nq_d  = _pct("^IXIC");  nq_w  = _wpct("^IXIC")
+        dj_p,  dj_d  = _pct("^DJI")
+        sox_p, sox_d = _pct("^SOX")
+        ks_p,  ks_d  = _pct("^KS11");  ks_w  = _wpct("^KS11")
+        kq_p,  kq_d  = _pct("^KQ11")
+        vix_p, _     = _pct("^VIX")
+        krw_p, krw_d = _pct("KRW=X")
+        gold_p,gold_d= _pct("GC=F")
+        oil_p, oil_d = _pct("CL=F")
+        btc_p, btc_d = _pct("BTC-USD")
+
+        today = datetime.today().strftime("%Y-%m-%d")
+        weekday_kr = ["월","화","수","목","금","토","일"][datetime.today().weekday()]
+
+        def _fmt(p, d, dec=0):
+            if p is None: return "—"
+            arrow = "▲" if (d or 0) >= 0 else "▼"
+            color_open  = "color:#ef4444" if (d or 0) >= 0 else "color:#3b82f6"
+            color_close = ""
+            return f'<b>{p:,.{dec}f}</b> <span style="{color_open};font-size:0.88em">{arrow}{abs(d or 0):.2f}%</span>'
+
+        # 미국 시장 브리핑
+        vix_str = f"{vix_p:.1f}" if vix_p else "—"
+        vix_lv  = "극도 긴장" if (vix_p or 0)>30 else "긴장" if (vix_p or 0)>20 else "안정" if (vix_p or 0)>15 else "과열 주의"
+        sp_w_str = f"주간 {sp_w:+.1f}%" if sp_w else ""
+        nq_w_str = f"주간 {nq_w:+.1f}%" if nq_w else ""
+        us_html = (
+            f'<b>S&P500</b> {_fmt(sp_p,sp_d)} &nbsp;{sp_w_str}<br>'
+            f'<b>NASDAQ</b> {_fmt(nq_p,nq_d)} &nbsp;{nq_w_str}<br>'
+            f'<b>다우</b> {_fmt(dj_p,dj_d)} &nbsp;·&nbsp; <b>필라델피아반도체</b> {_fmt(sox_p,sox_d)}<br>'
+            f'<b>VIX</b> {vix_str} <span style="opacity:0.6;font-size:0.88em">({vix_lv})</span> &nbsp;·&nbsp; '
+            f'<b>금</b> {_fmt(gold_p,gold_d)}$/oz &nbsp;·&nbsp; <b>WTI</b> {_fmt(oil_p,oil_d)}$'
+        )
+
+        # 한국 시장 브리핑
+        krw_str = f"{krw_p:,.0f}원" if krw_p else "—"
+        ks_w_str = f"주간 {ks_w:+.1f}%" if ks_w else ""
+        kr_html = (
+            f'<b>KOSPI</b> {_fmt(ks_p,ks_d)} &nbsp;{ks_w_str}<br>'
+            f'<b>KOSDAQ</b> {_fmt(kq_p,kq_d)}<br>'
+            f'<b>USD/KRW</b> {krw_str} <span style="opacity:0.6;font-size:0.88em">'
+            f'({("원화 강세" if (krw_d or 0)<0 else "원화 약세")} {abs(krw_d or 0):.2f}%)</span>'
+        )
+
+        # IronMin 포인트 (시장 상태 자동 판단)
+        signals = []
+        if (sp_d or 0) < -1.5:  signals.append("S&P500 급락 — 변동성 대응 필요")
+        elif (sp_d or 0) > 1.5: signals.append("S&P500 강한 반등 — 모멘텀 확인 중")
+        if (vix_p or 20) > 25:  signals.append(f"VIX {vix_str} 상승 — 공포 구간, 역발상 매수 기회 탐색")
+        elif (vix_p or 20) < 15:signals.append(f"VIX {vix_str} 저점 — 과열 주의, 리스크 관리 강화")
+        if (ks_d or 0) < -2:    signals.append("KOSPI 급락 — 외국인 동향 및 환율 확인")
+        if (gold_d or 0) > 1:   signals.append("금 강세 — 안전자산 수요 증가, 방어적 포지션 점검")
+        if not signals:          signals.append("시장 안정적 흐름 — 스크리닝 신호 중심 대응 권장")
+
+        outlook_html = "<br>".join(f"• {s}" for s in signals)
+
+        return {
+            "us_market":  us_html,
+            "kr_market":  kr_html,
+            "outlook":    outlook_html,
+            "generated":  f"{today}({weekday_kr}) 실시간",
+        }
+    except Exception as e:
+        return {
+            "us_market":  "데이터 로딩 중...",
+            "kr_market":  "데이터 로딩 중...",
+            "outlook":    "잠시 후 새로고침해 주세요.",
+            "generated":  "—",
+        }
+
 def stars_html(n, mx=5):
     return (f'<span class="star-on">{"★"*max(0,min(n,mx))}</span>'
             f'<span class="star-off">{"★"*(mx-max(0,min(n,mx)))}</span>')
@@ -1824,31 +1912,44 @@ if "시장 동향" in menu:
 
     st.markdown("<hr class='dot-divider'>", unsafe_allow_html=True)
 
-    # ── Claude 브리핑 ──
-    st.markdown(sec_hdr("🤖", "Claude 시장 브리핑"), unsafe_allow_html=True)
-    bf  = trends.get("claude_briefing", {})
-    us  = bf.get("us_market",  "업데이트 대기 중입니다.")
-    kr  = bf.get("kr_market",  "업데이트 대기 중입니다.")
-    out = bf.get("outlook",    "업데이트 대기 중입니다.")
+    # ── 시장 브리핑 (실시간 자동 생성) ──
+    _brf_col, _brf_btn = st.columns([5, 1])
+    with _brf_col:
+        st.markdown(sec_hdr("📡", "실시간 시장 브리핑"), unsafe_allow_html=True)
+    with _brf_btn:
+        st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
+        if st.button("🔄 새로고침", key="btn_refresh_briefing"):
+            st.cache_data.clear()
+            st.rerun()
+
+    with st.spinner("시장 데이터 분석 중..."):
+        bf = generate_live_briefing()
+
+    us  = bf.get("us_market",  "로딩 중...")
+    kr  = bf.get("kr_market",  "로딩 중...")
+    out = bf.get("outlook",    "로딩 중...")
+    gen = bf.get("generated",  "—")
+
+    st.markdown(f'<div style="font-size:0.7em;opacity:0.4;margin-bottom:8px">⏱ {gen} 기준 · 3시간마다 자동 갱신</div>', unsafe_allow_html=True)
 
     bc1, bc2 = st.columns(2)
     with bc1:
         st.markdown(f"""
 <div class="briefing-box">
   <div style="font-size:0.65em;color:#2563eb;font-weight:700;letter-spacing:1.5px;margin-bottom:10px">🇺🇸 미국 시장</div>
-  {us}
+  <div style="line-height:2">{us}</div>
 </div>""", unsafe_allow_html=True)
     with bc2:
         st.markdown(f"""
 <div class="briefing-box">
   <div style="font-size:0.65em;color:#2563eb;font-weight:700;letter-spacing:1.5px;margin-bottom:10px">🇰🇷 한국 시장</div>
-  {kr}
+  <div style="line-height:2">{kr}</div>
 </div>""", unsafe_allow_html=True)
 
     st.markdown(f"""
 <div class="briefing-box" style="border-left-color:#f59e0b">
   <div style="font-size:0.65em;color:#f59e0b;font-weight:700;letter-spacing:1.5px;margin-bottom:10px">🎯 IronMin 포인트</div>
-  {out}
+  <div style="line-height:2">{out}</div>
 </div>""", unsafe_allow_html=True)
 
     st.markdown("<hr class='dot-divider'>", unsafe_allow_html=True)
